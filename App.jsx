@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { VALIDATED } from './lib/validated-data.js';
 import { describirPronostico } from './lib/weather.js';
+import { WEATHER_LOCATIONS, nearestWeatherLocation } from './lib/weather-locations.js';
 
 // ============================================================================
 // GESTION MOLIENDA • CERÁMICA MARCOS PAZ
@@ -440,7 +441,8 @@ const App = () => {
   const [lecturasClima, setLecturasClima] = useState({ met: {}, weather: {}, accuweather: {}, weatherapi: {} });
   const [cargandoClima, setCargandoClima] = useState(false);
   const [errorClima, setErrorClima] = useState('');
-  const [weatherRefreshKey, setWeatherRefreshKey] = useState(0);
+  const [climaZona, setClimaZona] = useState('mejor');
+  const [geoClimaEstado, setGeoClimaEstado] = useState('');
   const [legacyDisponible, setLegacyDisponible] = useState(false);
   const [migracionParcial, setMigracionParcial] = useState(false);
   const [activeConfigTab, setActiveConfigTab] = useState('operarios');
@@ -591,7 +593,7 @@ const App = () => {
         if (Array.isArray(saved.ajustesManuales)) setAjustesManuales(saved.ajustesManuales);
         if (Number.isFinite(saved.densidadTierra) && saved.densidadTierra > 0) setDensidadTierra(saved.densidadTierra);
         if (Number.isFinite(saved.stockCajon2)) setStockCajon2(saved.stockCajon2);
-        if (saved.lecturasClima) setLecturasClima({ met: saved.lecturasClima.met ?? {}, actualizado: saved.lecturasClima.actualizado });
+        if (saved.lecturasClima?.zona === 'mejor') setLecturasClima({ ...saved.lecturasClima });
         if ([3, 5, 10].includes(saved.escalaCalidad)) setEscalaCalidad(saved.escalaCalidad);
         if (Array.isArray(saved.comentariosMejora)) setComentariosMejora(saved.comentariosMejora);
         if (typeof saved.datosEjemplo === 'boolean') setDatosEjemplo(saved.datosEjemplo);
@@ -692,21 +694,23 @@ const App = () => {
   }, [recordatorios]);
 
   useEffect(() => {
-    if (currentView !== 'clima' && currentView !== 'dashboard') return;
+    if (!hydrated || (currentView !== 'clima' && currentView !== 'dashboard')) return;
     const controller = new AbortController();
     const cargar = async () => {
       setCargandoClima(true); setErrorClima('');
       try {
-        const response = await fetch('/api/weather', { cache: 'no-store', signal: controller.signal });
-        if (!response.ok) throw new Error(`Pronóstico no disponible (HTTP ${response.status})`);
-        setLecturasClima(await response.json());
+        const response = await fetch(`/api/weather?zona=${climaZona}`, { cache: 'no-store', signal: controller.signal });
+        if (!response.ok) throw new Error('No se pudo consultar el pronóstico actual.');
+        const result = await response.json();
+        if (result.met?.estado !== 'actualizado' || !result.met.dias?.length) throw new Error('No hay un pronóstico actual disponible.');
+        if (!controller.signal.aborted) setLecturasClima(result);
       } catch (error) { if (error.name !== 'AbortError') setErrorClima(error.message); }
       finally { if (!controller.signal.aborted) setCargandoClima(false); }
     };
     cargar();
     const timer = setInterval(cargar, 30 * 60 * 1000);
     return () => { controller.abort(); clearInterval(timer); };
-  }, [currentView, weatherRefreshKey]);
+  }, [currentView, climaZona, hydrated]);
 
   useEffect(() => {
     if (!hydrated || !appsScriptUrl || appsScriptUrl === 'URL_AQUI') return;
@@ -3077,24 +3081,39 @@ const App = () => {
   </div></div>;
 
   const renderClimaView = () => {
-    const fuente = lecturasClima.met ?? {};
+    const ubicacion = WEATHER_LOCATIONS[lecturasClima.zona === climaZona ? lecturasClima.zonaSeleccionada : climaZona] ?? WEATHER_LOCATIONS.planta;
+    const lecturaActual = lecturasClima.zona === climaZona;
+    const fuente = lecturaActual ? lecturasClima.met ?? {} : {};
     const dias = (fuente.dias ?? []).slice(0, 7);
     const diagnostico = dias.length ? dias.map(d =>
       `${new Date(`${d.fecha}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric' })}: ${d.lluvia === null ? describirPronostico(d.descripcion).texto.toLowerCase() + ' (sin porcentaje publicado)' : d.lluvia >= 60 ? 'riesgo alto de lluvia; proteger acopios' : d.lluvia >= 30 ? 'riesgo moderado; verificar playa' : 'riesgo bajo; revisar humedad real'}`).join(' · ')
       : 'El pronóstico estará disponible cuando responda MET Norway.';
     return <div className={`min-h-screen ${themeClasses.bg} p-4 md:p-8`}><div className="max-w-5xl mx-auto space-y-6">
       <header className="flex flex-wrap justify-between items-center gap-3"><div>
-        <span className="text-sm font-bold text-cyan-400 uppercase">Cevil Pozo · Tucumán</span>
+        <span className="text-sm font-bold text-cyan-400 uppercase">{ubicacion.nombre} · Tucumán</span>
         <h2 className="text-2xl md:text-3xl font-black">Pronóstico para planificar la playa</h2>
-        <p className={`text-sm ${themeClasses.subtext}`}>Coordenadas -26.789032, -65.255817 · Datos automáticos de MET Norway, sin clave.</p>
-      </div><div className="flex gap-2"><button onClick={() => setWeatherRefreshKey(x => x + 1)} disabled={cargandoClima}
-        className="px-4 py-2 bg-cyan-500 text-slate-950 rounded-xl text-sm font-bold">{cargandoClima ? 'Consultando…' : 'Actualizar ahora'}</button>
-        <button onClick={() => setCurrentView('dashboard')} className="px-4 py-2 bg-slate-800 text-white rounded-xl text-sm font-bold">Volver</button></div></header>
-      {errorClima && <div role="alert" className="p-4 rounded-xl border border-red-500/50 text-red-300 text-sm">{errorClima}. Se conservan las últimas lecturas disponibles.</div>}
+        <p className={`text-sm ${themeClasses.subtext}`}>Coordenadas {ubicacion.lat}, {ubicacion.lon} · Datos automáticos de MET Norway, sin clave.</p>
+      </div><button onClick={() => setCurrentView('dashboard')} className="px-4 py-2 bg-slate-800 text-white rounded-xl text-sm font-bold">Volver</button></header>
+      <div className={`${themeClasses.card} border rounded-2xl p-4 flex flex-wrap items-end gap-3`}>
+        <label className="text-sm font-bold flex-1 min-w-56">Ubicación del pronóstico
+          <select value={climaZona} onChange={e => { setClimaZona(e.target.value); setGeoClimaEstado(''); }} className={`block mt-1 w-full rounded-xl p-2 ${themeClasses.input}`}>
+            <option value="mejor">Mejor cobertura cercana (automática)</option>
+            {Object.entries(WEATHER_LOCATIONS).map(([key, place]) => <option key={key} value={key}>{place.nombre}</option>)}
+          </select></label>
+        <button type="button" onClick={() => {
+          if (!navigator.geolocation) { setGeoClimaEstado('La ubicación del dispositivo no está disponible.'); return; }
+          setGeoClimaEstado('Buscando ubicación cercana…');
+          navigator.geolocation.getCurrentPosition(position => {
+            const nearest = nearestWeatherLocation(position.coords.latitude, position.coords.longitude);
+            setClimaZona(nearest); setGeoClimaEstado(`Ubicación cercana seleccionada: ${WEATHER_LOCATIONS[nearest].nombre}.`);
+          }, () => setGeoClimaEstado('No se pudo acceder a la ubicación. Seleccioná una ciudad de la lista.'), { timeout: 10000, maximumAge: 300000 });
+        }} className="px-4 py-2 rounded-xl bg-cyan-700 text-white text-sm font-bold">Usar ubicación cercana</button>
+        <span className="text-xs text-slate-400" role="status">{geoClimaEstado || (climaZona === 'mejor' && lecturaActual && dias.length ? `Datos más completos: ${ubicacion.nombre}. ` : '') + (cargandoClima ? 'Consultando pronóstico…' : errorClima ? 'Sin actualización disponible' : 'Actualización automática al ingresar')}</span>
+      </div>
       <section className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-5"><h3 className="text-sm font-black text-emerald-400 uppercase mb-2">Planificación orientativa</h3><p className="text-sm leading-relaxed">{diagnostico}</p>
         <p className="text-sm text-slate-400 mt-2">Los símbolos señalan condiciones previstas, no equivalen a un porcentaje de lluvia. Verificá la playa y la tierra antes de descargar o mover acopios.</p></section>
       {dias[0] && <section className={`${themeClasses.card} border rounded-2xl p-5 space-y-3`}><h3 className="text-lg font-bold">Hoy, hora por hora</h3>
-        <p className="text-sm text-slate-400">{new Date(`${dias[0].fecha}T12:00:00`).toLocaleDateString('es-AR', { dateStyle: 'full' })} · intervalos disponibles del modelo para Cevil Pozo.</p>
+        <p className="text-sm text-slate-400">{new Date(`${dias[0].fecha}T12:00:00`).toLocaleDateString('es-AR', { dateStyle: 'full' })} · intervalos disponibles del modelo para {ubicacion.nombre}.</p>
         <div className="flex gap-2 overflow-x-auto pb-2">{(dias[0].horas ?? []).map((h, i) => { const v = describirPronostico(h.simbolo);
           return <div key={`${h.hora}-${i}`} className="min-w-32 border border-slate-700 bg-slate-800/60 rounded-xl p-3 text-sm space-y-1"><strong>{h.hora}</strong>
             <div><span aria-hidden="true">{v.emoji}</span> {h.temperatura == null ? '—' : `${Math.round(h.temperatura)}°`}</div>
@@ -3103,15 +3122,15 @@ const App = () => {
       </section>}
       <section className={`${themeClasses.card} border rounded-2xl p-5 space-y-3`}>
         <div className="flex flex-wrap justify-between gap-2"><h3 className="text-lg font-black text-cyan-400">MET Norway · hasta 7 días</h3>
-          <span className="text-sm text-slate-400">{fuente.estado === 'actualizado' ? 'Datos recibidos' : 'Sin datos actuales'}</span></div>
-        <p className="text-xs text-slate-400">Playa Molienda · última consulta {lecturasClima.actualizado ? new Date(lecturasClima.actualizado).toLocaleString('es-AR') : 'pendiente'}. Datos: Norwegian Meteorological Institute, licencia CC BY 4.0 · <a className="underline" href="https://api.met.no/" target="_blank" rel="noreferrer">Fuente</a> · <a className="underline" href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">Licencia</a>.</p>
+          <span className="text-sm text-slate-400">{cargandoClima ? 'Consultando…' : errorClima ? (dias.length ? 'Última lectura disponible' : 'Sin datos actuales') : fuente.estado === 'actualizado' ? 'Datos recibidos' : 'Sin datos actuales'}</span></div>
+        <p className="text-xs text-slate-400">{ubicacion.nombre} · última lectura {lecturaActual && lecturasClima.actualizado ? new Date(lecturasClima.actualizado).toLocaleString('es-AR') : 'pendiente'}. Datos: Norwegian Meteorological Institute, licencia CC BY 4.0 · <a className="underline" href="https://api.met.no/" target="_blank" rel="noreferrer">Fuente</a> · <a className="underline" href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">Licencia</a>.</p>
         <div className="grid sm:grid-cols-2 gap-3">{dias.map(d => { const visual = describirPronostico(d.descripcion);
           return <div key={d.fecha} className="rounded-xl border border-slate-700 bg-slate-800/60 p-4">
             <div className="flex justify-between items-center gap-3"><strong>{new Date(`${d.fecha}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'short' })}</strong><strong>{d.max ?? '—'}° / {d.min ?? '—'}°</strong></div>
             <p className="text-sm mt-2"><span aria-hidden="true" className="text-xl mr-2">{visual.emoji}</span>{visual.texto}</p>
             <div className="mt-2 flex flex-wrap gap-3 text-sm text-slate-300"><span>Lluvia {d.lluvia == null ? 'sin dato' : `${d.lluvia}%`}</span><span>Agua {d.lluviaMm == null ? 'sin dato' : `${d.lluviaMm} mm`}</span><span>Humedad {d.humedad == null ? '—' : `${d.humedad}%`}</span><span>Viento {d.viento == null ? '—' : `${d.viento} km/h`}</span></div>
           </div>; })}</div>
-        {!dias.length && <p className="text-sm text-slate-400">{fuente.mensaje ?? 'Pronóstico no disponible. Actualizá más tarde.'}</p>}
+        {!dias.length && <p className="text-sm text-slate-400">{cargandoClima ? 'Consultando pronóstico…' : 'El pronóstico no está disponible por ahora. Se intentará de nuevo al ingresar.'}</p>}
         <p className="text-xs text-slate-400">Máximas y mínimas calculadas de intervalos publicados. Si no se informa probabilidad o faltan intervalos para la lluvia acumulada, se muestra «sin dato».</p>
       </section>
       <section className={`${themeClasses.card} border rounded-2xl p-5 space-y-2`}><h3 className="font-bold">Consultar otros sitios</h3>

@@ -5,6 +5,7 @@ import test from 'node:test';
 import { normalizeAccuWeather, normalizeWeatherCompany, normalizeMetNorway, describirPronostico } from '../lib/weather.js';
 import { parseCsv } from '../lib/csv.js';
 import { GET as getWeather } from '../app/api/weather/route.js';
+import { nearestWeatherLocation } from '../lib/weather-locations.js';
 import { POST as postSheets } from '../app/api/sheets/route.js';
 const scriptUrl = 'https://script.google.com/macros/s/AKfycbx0KsVei3Nz-z9qpEu-Pot10qEKTQKJqOl93wsTXdOWHaCM80jnw-wqrTRPrS8zue36/exec';
 
@@ -123,6 +124,36 @@ test('pronóstico sin clave usa MET sin exigir otros proveedores', async () => {
     assert.equal(result.met.dias[0].viento, 18);
     assert.equal(result.met.dias[0].lluviaMm, null);
     assert.equal(result.weather, undefined);
+  } finally { globalThis.fetch = original; }
+});
+
+test('ubicaciones válidas usan sus coordenadas y cada localidad se selecciona por cercanía', async () => {
+  const original = globalThis.fetch;
+  let requestedUrl = '';
+  globalThis.fetch = async url => { requestedUrl = url; return new Response(JSON.stringify({ properties: { timeseries: [] } })); };
+  try {
+    const result = await (await getWeather(new Request('https://example.test/api/weather?zona=yerba_buena'))).json();
+    assert.equal(result.zona, 'yerba_buena');
+    assert.match(requestedUrl, /lat=-26.81298&lon=-65.29543/);
+    assert.equal(nearestWeatherLocation(-26.81298, -65.29543), 'yerba_buena');
+    const invalid = await getWeather(new Request('https://example.test/api/weather?zona=desconocida'));
+    assert.equal(invalid.status, 400);
+  } finally { globalThis.fetch = original; }
+});
+
+test('búsqueda cercana compara cobertura y elige la localidad con más datos', async () => {
+  const { GET: isolatedWeather } = await import('../app/api/weather/route.js?coverage-test');
+  const original = globalThis.fetch;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  globalThis.fetch = async url => new Response(JSON.stringify({ properties: { timeseries: [{
+    time: `${today}T15:00:00Z`, data: { instant: { details: { air_temperature: 24 } },
+      next_1_hours: { details: url.includes('lat=-26.81298') ? { probability_of_precipitation: 65 } : {},
+        summary: { symbol_code: 'rain' } } }
+  }] } }));
+  try {
+    const result = await (await isolatedWeather(new Request('https://example.test/api/weather?zona=mejor'))).json();
+    assert.equal(result.zonaSeleccionada, 'yerba_buena');
+    assert.equal(result.met.dias[0].lluvia, 65);
   } finally { globalThis.fetch = original; }
 });
 

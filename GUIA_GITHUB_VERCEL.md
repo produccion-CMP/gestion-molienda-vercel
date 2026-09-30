@@ -2,6 +2,8 @@
 
 Esta carpeta está preparada para **Next.js en Vercel**. No subas el archivo ZIP a GitHub: primero descomprimilo y publicá la carpeta que contiene `package.json`.
 
+**Importante:** el sitio de vista previa de ChatGPT y tu proyecto GitHub/Vercel son despliegues separados. Publicar aquí no hace `push` a tu repositorio. Para que Vercel se actualice, hay que subir los archivos de esta carpeta al repositorio que Vercel tiene conectado.
+
 ## 1. Preparar la computadora
 
 Instalá [Visual Studio Code](https://code.visualstudio.com/), [Git](https://git-scm.com/downloads) y [Node.js 22](https://nodejs.org/). Cerrá y volvé a abrir VS Code después de instalarlos. En la terminal integrada (**Terminal → New Terminal**) comprobá:
@@ -45,13 +47,17 @@ Abrí `http://localhost:3000`. Para detener el servidor usá **Ctrl+C**. El clim
 
 Si VS Code te pide identidad para el commit, configurá en la terminal `git config --global user.name "Tu nombre"` y `git config --global user.email "tu-correo-de-GitHub"`, y repetí el commit. No crees otro repositorio con README desde GitHub antes de usar **Publish to GitHub**: VS Code lo creará desde esta carpeta.
 
+## Si el repositorio ya está creado en GitHub
+
+No inicialices otro repositorio. Para incorporar esta última mejora del pronóstico, copiá al proyecto abierto en VS Code estos cuatro archivos del ZIP, conservando sus rutas: `App.jsx`, `lib/weather-locations.js`, `app/api/weather/route.js` y `tests/mes.test.mjs`. Revisá los cambios en **Source Control**, ejecutá `pnpm test` y `pnpm build`, hacé **Commit** y **Push**. Verificá en GitHub que el último commit se vea antes de importar en Vercel. Si tu repositorio tiene cambios propios en alguno de estos archivos, compará las diferencias antes de reemplazarlo.
+
 ## 4. Importar el repositorio en Vercel
 
 1. Entrá a [Vercel → New Project](https://vercel.com/new), conectá tu cuenta de GitHub y elegí el repositorio privado.
 2. Comprobá **Framework Preset: Next.js** y **Root Directory: `./`**.
 3. Dejá el **Build Command** en el valor automático (`pnpm build`, que ejecuta `next build`) y **Output Directory** sin sobrescribir. No uses `vinext build` ni la carpeta `dist` del alojamiento anterior.
 4. Elegí Node.js 22 en la configuración del proyecto si Vercel no lo detecta desde `package.json`.
-5. En **Environment Variables**, antes de registrar datos reales, agregá `MES_SYNC_TOKEN` como variable secreta con el mismo valor que en Propiedades de la secuencia de comandos de Apps Script. MET Norway muestra máximas, mínimas y probabilidad de lluvia sin clave. AccuWeather y The Weather Channel se abren mediante enlaces externos. Para habilitar la corrección de indicaciones y el asistente, agregá `OPENAI_API_KEY` como secreto del servidor; sin esa clave, la guía y los formularios manuales siguen disponibles. Nunca publiques claves en GitHub.
+5. En **Environment Variables**, antes de registrar datos reales, agregá `MES_SYNC_TOKEN` como variable secreta con el mismo valor que en Propiedades de la secuencia de comandos de Apps Script. MET Norway muestra máximas y mínimas sin clave; la probabilidad de lluvia puede no estar publicada para Tucumán. AccuWeather y The Weather Channel se abren mediante enlaces externos. Para habilitar la corrección de indicaciones y el asistente, agregá `OPENAI_API_KEY` como secreto del servidor; sin esa clave, la guía y los formularios manuales siguen disponibles. Nunca publiques claves en GitHub.
 6. Pulsá **Deploy** y revisá el resultado. Cada nuevo **Push** a GitHub generará otro despliegue.
 
 ### Datos y acceso de planta
