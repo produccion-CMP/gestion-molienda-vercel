@@ -14,6 +14,8 @@ const MES_RECIPIENT_HEADER = ['email','nombre','area','activo'];
 const MES_TELEGRAM_HEADER = ['chatId','nombre','telefono','destino','activo'];
 const MES_REMINDER_HEADER = ['id','creado','fechaAviso','horaAviso','para','prioridad','texto','completado','realizadoEn','estadoTelegram','notificadoEn'];
 const MES_TELEGRAM_LOG_HEADER = ['idAviso','chatId','fecha','estado','detalle','destino'];
+const MES_MAP_CURRENT_HEADER = ['revision','actualizado','origen','planoJSON','resumenJSON'];
+const MES_MAP_ELEMENTS_HEADER = ['revision','actualizado','tipo','id','nombre','estado','sector','forma','x','y','ancho','alto','radio','pisos','propiedadesJSON'];
 
 // Conserva el menú del proyecto original. Sólo prepara encabezados faltantes:
 // no sobrescribe catálogos, existencias ni registros históricos.
@@ -46,6 +48,9 @@ function crearEstructuraHojas() {
     tab.setFrozenRows(1);
   });
   mesTab(book, 'MES_Auditorias', MES_AUDIT_HEADER, true);
+  mesTab(book, 'MES_Planos', ['revision','actualizado','planoJSON'], true);
+  mesTab(book, 'MES_Plano_Actual', MES_MAP_CURRENT_HEADER, true);
+  mesTab(book, 'MES_Plano_Elementos', MES_MAP_ELEMENTS_HEADER, true);
   mesTab(book, 'MES_Inventario', MES_STOCK_HEADER, true);
   const inventario = book.getSheetByName('MES_Inventario');
   if (!inventario.getRange(1, 7).getValue()) inventario.getRange(1, 7).setValue('paladasOperativas');
@@ -103,6 +108,19 @@ function mesStock(book) {
       cuadrante: String(r[3] || ''), pisos: Number(r[4]) || 1, toneladas,
       m3Estimados: Number(r[6]) || 0, activo: String(r[7]).toUpperCase() !== 'INACTIVO', humedadNivel: 1 });
   });
+  const shared = mesReadMap(book).map;
+  if (shared) {
+    const merge = (items, definitions) => {
+      definitions.forEach(a => {
+        let item = items.find(x => String(x.id) === String(a.id));
+        if (!item) { item = { id: String(a.id), toneladas: 0, paladasOperativas: 0, humedadNivel: 1 }; items.push(item); }
+        ['nombre','sector','cuadrante','pisos','activo'].forEach(k => { if (a[k] !== undefined) item[k] = a[k]; });
+        if (a.calidades && a.calidades.Humedad !== undefined) item.humedadNivel = a.calidades.Humedad;
+      });
+    };
+    merge(acopios, shared.acopios);
+    merge(conos, shared.conos || []);
+  }
   return { acopios, conos, cajon2 };
 }
 
@@ -388,7 +406,7 @@ function doGet(e) {
   try {
     if (e.parameter?.action === 'health') return mesJson({ ok: true, servicio: 'MES Molienda', version: 3 });
     if (!mesAuthorized(e.parameter?.token)) return mesJson({ ok: false, error: 'No autorizado' });
-    return mesJson(e.parameter.action === 'historical' ? mesHistorical(e) : e.parameter.action === 'getMap' ? mesReadMap(SpreadsheetApp.openById(MES_PRIMARY_ID)) : mesState());
+    return mesJson(e.parameter.action === 'historical' ? mesHistorical(e) : e.parameter.action === 'getMap' ? mesMapSnapshot() : mesState());
   }
   catch (error) { return mesJson({ ok: false, error: error.message }); }
 }
@@ -405,13 +423,24 @@ function doPost(e) {
       if (!Number.isInteger(body.expectedRevision) || body.expectedRevision !== current.revision)
         throw new Error('Conflicto de versión: otra persona publicó el plano. Cargá la versión compartida.');
       mesValidateMap(body.map);
-      const text = JSON.stringify(body.map);
+      if (body.map.schema !== 2) throw new Error('Actualizá la aplicación antes de guardar el plano.');
+      const map = mesCanonicalizeMap(book, JSON.parse(JSON.stringify(body.map)));
+      mesValidateMap(map);
+      const stock = mesStock(book);
+      const removed = (old, next) => old.filter(a => !next.some(b => String(a.id) === String(b.id) && b.activo !== false));
+      const unavailable = [...removed(current.map?.acopios || [], map.acopios).map(a => ['acopio', a]),
+        ...removed(current.map?.conos || [], map.conos).map(a => ['cono', a])];
+      unavailable.forEach(([tipo, a]) => {
+        const item = (tipo === 'cono' ? stock.conos : stock.acopios).find(x => String(x.id) === String(a.id));
+        if (item && item.toneladas > 0) throw new Error('Conciliá el stock antes de quitar o desactivar ' + a.nombre);
+      });
+      const text = JSON.stringify(map);
       if (text.length > 45000) throw new Error('El plano supera el tamaño admitido.');
-      const tab = mesTab(book, 'MES_Planos', ['revision','actualizado','planoJSON'], true);
       const revision = current.revision + 1;
       const updatedAt = new Date().toISOString();
-      tab.appendRow([revision, updatedAt, text]);
-      return mesJson({ ok: true, mapProtocol: 1, revision, updatedAt });
+      mesEnsureMapInventory(book, map);
+      mesWriteMap(book, map, revision, updatedAt);
+      return mesJson({ ok: true, mapProtocol: 2, revision, updatedAt });
     }
     if (body.action === 'saveTelegramRecipient') {
       if (!lock.tryLock(20000)) throw new Error('Configuración ocupada. Reintentá.');
@@ -633,19 +662,101 @@ function registrarUsuariosTelegram() {
 }
 
 function mesReadMap(book) {
-  const tab = book.getSheetByName('MES_Planos');
-  if (!tab || tab.getLastRow() < 2) return { ok: true, mapProtocol: 1, revision: 0, map: null };
-  const row = tab.getRange(tab.getLastRow(), 1, 1, 3).getValues()[0];
+  // MES_Plano_Actual es la lectura rápida; MES_Planos queda como historial inmutable.
+  const current = book.getSheetByName('MES_Plano_Actual');
+  if (current && current.getLastRow() >= 2 && current.getRange(2, 4).getValue()) {
+    const row = current.getRange(2, 1, 1, 5).getValues()[0];
+    const map = JSON.parse(String(row[3]));
+    mesValidateMap(map);
+    const revision = Number(row[0]);
+    if (!Number.isInteger(revision) || revision < 1) throw new Error('La revisión actual del plano no es válida.');
+    return { ok: true, mapProtocol: 2, revision, updatedAt: row[1] instanceof Date ? row[1].toISOString() : String(row[1]), map };
+  }
+  // Compatibilidad con una publicación anterior que sólo tenía MES_Planos.
+  const history = book.getSheetByName('MES_Planos');
+  if (!history || history.getLastRow() < 2) return { ok: true, mapProtocol: 2, revision: 0, map: null };
+  const row = history.getRange(history.getLastRow(), 1, 1, 3).getValues()[0];
   const map = JSON.parse(String(row[2]));
   mesValidateMap(map);
   const revision = Number(row[0]);
-  if (!Number.isInteger(revision) || revision < 1) throw new Error('La revisión del plano no es válida. Revisá MES_Planos.');
-  return { ok: true, mapProtocol: 1, revision, updatedAt: row[1] instanceof Date ? row[1].toISOString() : String(row[1]), map };
+  if (!Number.isInteger(revision) || revision < 1) throw new Error('La revisión del historial del plano no es válida.');
+  return { ok: true, mapProtocol: 2, revision, updatedAt: row[1] instanceof Date ? row[1].toISOString() : String(row[1]), map };
+}
+
+function mesMapKey(value) {
+  return String(value || '').trim().toLocaleLowerCase();
+}
+
+function mesCanonicalizeMap(book, map) {
+  const beach = book.getSheetByName('AcopiosPlaya');
+  const rows = beach && beach.getLastRow() > 1 ? beach.getRange(2, 1, beach.getLastRow() - 1, 8).getValues() : [];
+  const byId = new Map(rows.filter(r => r[0] !== '').map(r => [String(r[0]), r]));
+  const byName = new Map(rows.filter(r => r[1]).map(r => [mesMapKey(r[1]), r]));
+  const ids = new Set();
+  map.acopios.forEach(a => {
+    const known = byId.get(String(a.id)) || byName.get(mesMapKey(a.nombre));
+    if (known) a.id = String(known[0]);
+    if (ids.has(String(a.id))) throw new Error('Dos acopios del plano coinciden con el mismo registro de inventario. Cambiá nombre o ID.');
+    ids.add(String(a.id));
+  });
+  return map;
+}
+
+function mesMapElementRows(map, revision, updatedAt) {
+  const out = [], push = (tipo, item, geo, extras) => {
+    const g = geo || {};
+    out.push([revision, updatedAt, tipo, String(item.id || ''), String(item.nombre || item.label || tipo),
+      item.activo === false || item.visible === false ? 'INACTIVO' : item.esFuturo ? 'PREVISTO' : 'ACTIVO',
+      String(item.sector || item.sectorDestino || ''), String(item.forma || ''), Number(g.x || item.x || item.posX || 0),
+      Number(g.y || item.y || item.posY || 0), Number(g.w || item.w || item.largoEje || 0), Number(g.h || item.h || item.radioBase || 0),
+      Number(g.r || item.r || item.radioBase || 0), Number(item.pisos || 0), JSON.stringify(extras || item)]);
+  };
+  map.acopios.forEach(a => push('ACOPIO', a));
+  map.conos.forEach(c => push('CONO', c, map.posicionConos[c.id]));
+  Object.entries(map.posicionCajones).forEach(([id, c]) => push('CAJON', { ...c, id }));
+  map.sectoresVirtuales.forEach(x => push('SECTOR', x));
+  map.verticesPoligono.forEach((x, i) => push('LIMITE', { ...x, id: x.id || `limite-${i}`, nombre: x.label || `Vértice ${i + 1}` }));
+  push('NAVE', { id: 'nave-molienda', nombre: 'Nave de molienda' }, map.posicionNaveMolienda);
+  push('SILO', { id: 'bateria-silo', nombre: 'Batería de silo' }, map.posicionSiloConos);
+  map.elementosMapa.forEach(x => push('ELEMENTO', x));
+  map.reservas.forEach(x => push('RESERVA', { ...x, nombre: x.nombreNuevoAcopio }));
+  return out;
+}
+
+function mesWriteMap(book, map, revision, updatedAt) {
+  const text = JSON.stringify(map);
+  const summary = JSON.stringify({ acopios: map.acopios.length, conos: map.conos.length, cajones: Object.keys(map.posicionCajones).length,
+    sectores: map.sectoresVirtuales.length, elementos: map.elementosMapa.length, reservas: map.reservas.length });
+  const history = mesTab(book, 'MES_Planos', ['revision','actualizado','planoJSON'], true);
+  history.appendRow([revision, updatedAt, text]);
+  const current = mesTab(book, 'MES_Plano_Actual', MES_MAP_CURRENT_HEADER, true);
+  if (current.getLastRow() > 1) current.getRange(2, 1, current.getLastRow() - 1, MES_MAP_CURRENT_HEADER.length).clearContent();
+  current.getRange(2, 1, 1, MES_MAP_CURRENT_HEADER.length).setValues([[revision, updatedAt, 'Gestión Molienda', text, summary]]);
+  const elements = mesTab(book, 'MES_Plano_Elementos', MES_MAP_ELEMENTS_HEADER, true);
+  if (elements.getLastRow() > 1) elements.getRange(2, 1, elements.getLastRow() - 1, MES_MAP_ELEMENTS_HEADER.length).clearContent();
+  const rows = mesMapElementRows(map, revision, updatedAt);
+  if (rows.length) elements.getRange(2, 1, rows.length, MES_MAP_ELEMENTS_HEADER.length).setValues(rows);
+  [history,current,elements].forEach(tab => { tab.setFrozenRows(1); tab.autoResizeColumns(1, Math.min(tab.getLastColumn(), 8)); });
+}
+
+function mesEnsureMapInventory(book, map) {
+  const stock = mesStock(book);
+  map.acopios.forEach(a => {
+    let item = stock.acopios.find(x => String(x.id) === String(a.id));
+    if (!item) { item = { id: String(a.id), toneladas: 0, m3Estimados: 0 }; stock.acopios.push(item); }
+    ['nombre','sector','cuadrante','pisos','activo'].forEach(k => { if (a[k] !== undefined) item[k] = a[k]; });
+  });
+  map.conos.forEach(c => {
+    let item = stock.conos.find(x => String(x.id) === String(c.id));
+    if (!item) { item = { id: String(c.id), toneladas: 0, humedadNivel: 1, paladasOperativas: 0 }; stock.conos.push(item); }
+    item.nombre = c.nombre; item.activo = c.activo !== false;
+  });
+  mesWriteStock(book, stock, { AcopiosPlaya: map.acopios });
 }
 
 function mesValidateMap(map) {
-  const allowed = ['schema','verticesPoligono','sectoresVirtuales','posicionNaveMolienda','posicionSiloConos','posicionCajones','posicionConos','elementosMapa','acopios'];
-  if (!map || map.schema !== 1 || Object.keys(map).some(k => allowed.indexOf(k) < 0)) throw new Error('Formato del plano inválido.');
+  const allowed = ['schema','verticesPoligono','sectoresVirtuales','posicionNaveMolienda','posicionSiloConos','posicionCajones','posicionConos','elementosMapa','acopios','conos','reservas','parametros'];
+  if (!map || ![1,2].includes(map.schema) || Object.keys(map).some(k => allowed.indexOf(k) < 0)) throw new Error('Formato del plano inválido.');
   ['verticesPoligono','sectoresVirtuales','elementosMapa','acopios'].forEach(k => {
     if (!Array.isArray(map[k]) || map[k].length > 300) throw new Error('Colección del plano inválida: ' + k);
   });
@@ -655,10 +766,37 @@ function mesValidateMap(map) {
   });
   map.verticesPoligono.forEach(v => { if (!v || !Number.isFinite(v.x) || !Number.isFinite(v.y)) throw new Error('Coordenadas inválidas.'); });
   const ids = new Set();
-  const acopioFields = ['id','nombre','sector','cuadrante','pisos','posX','posY','radioBase','largoEje','activo','esFuturo'];
+  const acopioFields = ['id','nombre','sector','cuadrante','pisos','posX','posY','radioBase','largoEje','activo','esFuturo','forma','textura','calidades','recetaId','origenReceta'];
   map.acopios.forEach(a => {
     if (!a || !a.id || typeof a.nombre !== 'string' || ids.has(String(a.id)) || Object.keys(a).some(k => acopioFields.indexOf(k) < 0)) throw new Error('Acopio de plano inválido.');
     ['posX','posY','radioBase','largoEje'].forEach(k => { if (!Number.isFinite(a[k])) throw new Error('Geometría de acopio inválida.'); });
+    if (a.textura) {
+      const values = ['arcilla','arena','limo'].map(k => a.textura[k]);
+      if (values.some(v => !Number.isFinite(v) || v < 0 || v > 100) || (values.reduce((x,y) => x+y,0) !== 0 && Math.abs(values.reduce((x,y) => x+y,0) - 100) > 0.01)) throw new Error('La textura debe sumar 100% o quedar sin evaluar (0%).');
+    }
+    if (a.calidades && Object.values(a.calidades).some(v => !Number.isFinite(v) || v < 0 || v > 10)) throw new Error('Calidad inválida.');
+    if (a.calidades?.Humedad !== undefined && (!Number.isInteger(a.calidades.Humedad) || a.calidades.Humedad > 3)) throw new Error('Humedad inválida.');
     ids.add(String(a.id));
   });
+  if (map.schema === 2) {
+    if (!Array.isArray(map.conos) || map.conos.length > 300 || !Array.isArray(map.reservas) || map.reservas.length > 300) throw new Error('Elementos de plano inválidos.');
+    const coneIds = new Set();
+    map.conos.forEach(c => {
+      if (!c.id || typeof c.nombre !== 'string' || !c.nombre.trim() || coneIds.has(String(c.id)) || Object.keys(c).some(k => !['id','nombre','activo'].includes(k))) throw new Error('Cono inválido.');
+      coneIds.add(String(c.id));
+    });
+    const p = map.parametros;
+    if (!p || !Number.isFinite(p.densidadTierra) || p.densidadTierra <= 0 || p.densidadTierra > 5 || ![3,5,10].includes(p.escalaCalidad) || !Array.isArray(p.caracteristicasTierra)) throw new Error('Parámetros de tierra inválidos.');
+  }
+}
+
+function mesMapSnapshot() {
+  const lock = LockService.getScriptLock();
+  try {
+    if (!lock.tryLock(10000)) throw new Error('Se está registrando un cambio. Reintentá.');
+    const book = SpreadsheetApp.openById(MES_PRIMARY_ID);
+    const snapshot = mesReadMap(book);
+    const stock = mesStock(book);
+    return { ...snapshot, stock, stockEtag: mesDigest(stock), checkedAt: new Date().toISOString() };
+  } finally { if (lock.hasLock()) lock.releaseLock(); }
 }

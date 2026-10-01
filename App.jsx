@@ -1,6 +1,6 @@
 "use client";
 import SharedMapPanel from './components/SharedMapPanel.jsx';
-import { extractSharedMap } from './lib/shared-map.js';
+import { extractSharedMap, mergeMapItems, withInventory } from './lib/shared-map.js';
 import React, { useState, useEffect, useRef } from 'react';
 import { VALIDATED } from './lib/validated-data.js';
 import { describirPronostico } from './lib/weather.js';
@@ -476,6 +476,14 @@ const App = () => {
   const [elementosMapa, setElementosMapa] = useState([]);
   const [verticeSeleccionado, setVerticeSeleccionado] = useState(null);
 
+  const [reservasPlano, setReservasPlano] = useState([]);
+  const [planoPublicado, setPlanoPublicado] = useState(null);
+  const [inventarioPlano, setInventarioPlano] = useState(null);
+  const [estadoPlano, setEstadoPlano] = useState({ connected: false, initialized: false });
+  const [pinPublicacion, setPinPublicacion] = useState('');
+  const sharedDefinitionRef = useRef(null);
+  const inventarioPlanoRef = useRef(null);
+  const ajustePlanoRef = useRef(false);
   const [stockPlaya, setStockPlaya] = useState(VALIDATED.acopios);
 
   const [stockSilos, setStockSilos] = useState([
@@ -599,6 +607,7 @@ const App = () => {
         if (/^\d{4,12}$/.test(saved.adminPin ?? '')) setAdminPin(saved.adminPin);
         if (typeof saved.darkMode === 'boolean') setDarkMode(saved.darkMode);
         if (saved.migracionParcial) setMigracionParcial(true);
+        setReservasPlano(saved.reservasPlano ?? saved.plan?.recetasAcopio ?? []);
         if (typeof saved.conosValidados === 'boolean') setConosValidados(saved.conosValidados);
         if (eraDemoSinCierres) {
           setStockPlaya(VALIDATED.acopios);
@@ -651,7 +660,7 @@ const App = () => {
   useEffect(() => {
     if (!hydrated) return;
     const snapshot = {
-      version: 2, operadores, maquinas, canteras, sectores, destinosGenerales, accionesPlaya,
+      version: 2, reservasPlano, operadores, maquinas, canteras, sectores, destinosGenerales, accionesPlaya,
       caracteristicasTierra, escalaCalidad, comentariosMejora, verticesPoligono, sectoresVirtuales, posicionNaveMolienda,
       posicionSiloConos, posicionCajones, posicionConos, elementosMapa,
       stockPlaya, stockSilos, stockCajon2, plan, control, recordatorios,
@@ -660,7 +669,7 @@ const App = () => {
     };
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot)); }
     catch { setToast({ visible: true, mensaje: 'Almacenamiento lleno. Exportá un respaldo desde Configuración.', tipo: 'error' }); }
-  }, [hydrated, operadores, maquinas, canteras, sectores, destinosGenerales, accionesPlaya,
+  }, [hydrated, reservasPlano, operadores, maquinas, canteras, sectores, destinosGenerales, accionesPlaya,
     caracteristicasTierra, escalaCalidad, comentariosMejora, verticesPoligono, sectoresVirtuales, posicionNaveMolienda,
     posicionSiloConos, posicionCajones, posicionConos, elementosMapa,
     stockPlaya, stockSilos, stockCajon2, plan, control, recordatorios,
@@ -716,7 +725,7 @@ const App = () => {
 
   const consultarAppsScript = async (action, extra = {}) => {
     const response = await fetch('/api/sheets', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: appsScriptUrl, action, ...extra }) });
+      body: JSON.stringify({ url: appsScriptUrl, action, ...extra, mapPin: ['saveMap', 'adjustStock'].includes(action) ? pinPublicacion : undefined }) });
     const raw = await response.text();
     let result;
     try { result = JSON.parse(raw); }
@@ -775,11 +784,10 @@ const App = () => {
       if (aplicar) {
         setStockPlaya(prev => {
           const actualizados = prev.map(a => { const r = remoto.stock.acopios.find(x => clave(x.nombre) === clave(a.nombre) || String(x.id) === String(a.id));
-            return r ? { ...a, nombre: r.nombre, sector: r.sector ?? a.sector, cuadrante: r.cuadrante ?? a.cuadrante,
-              pisos: r.pisos ?? a.pisos, activo: r.activo ?? a.activo, toneladas: numero(r.toneladas),
+            return r ? { ...a, ...(sharedDefinitionRef.current ? {} : { nombre: r.nombre, sector: r.sector ?? a.sector, cuadrante: r.cuadrante ?? a.cuadrante, pisos: r.pisos ?? a.pisos, activo: r.activo ?? a.activo }), toneladas: numero(r.toneladas),
               m3Estimados: numero(r.m3Estimados) || redondear(numero(r.toneladas) / densidadTierra) } : a; });
           const faltantes = remoto.stock.acopios.filter(r => !prev.some(a => clave(a.nombre) === clave(r.nombre) || String(a.id) === String(r.id)));
-          return [...actualizados, ...faltantes.map((r, i) => ({ id: r.id, nombre: r.nombre, toneladas: numero(r.toneladas),
+          return [...actualizados, ...faltantes.map((r, i) => ({ enPlano: !sharedDefinitionRef.current, id: r.id, nombre: r.nombre, toneladas: numero(r.toneladas),
             posX: 450 + i * 45, posY: 160 + i * 25, radioBase: 30, largoEje: 40, pisos: 1, paladas: 0,
             m3Estimados: numero(r.m3Estimados) || redondear(numero(r.toneladas) / densidadTierra),
             calidades: {}, textura: { arcilla: 0, arena: 0, limo: 0 }, activo: r.activo ?? true }))];
@@ -787,8 +795,8 @@ const App = () => {
         setStockSilos(prev => [...prev.map(s => { const r = remoto.stock.conos.find(x => clave(x.nombre) === clave(s.nombre) || String(x.id) === String(s.id));
           return r ? { ...s, toneladas: numero(r.toneladas), humedadNivel: nivelHumedad(r.humedadNivel), paladasOperativas: numero(r.paladasOperativas) } : s; }),
           ...remoto.stock.conos.filter(r => !prev.some(s => clave(s.nombre) === clave(r.nombre) || String(s.id) === String(r.id)))
-            .map(r => ({ id: r.id, nombre: r.nombre, toneladas: numero(r.toneladas), humedadNivel: nivelHumedad(r.humedadNivel), paladasOperativas: numero(r.paladasOperativas), activo: true }))]);
-        setPosicionConos(prev => {
+            .map(r => ({ enPlano: !sharedDefinitionRef.current, id: r.id, nombre: r.nombre, toneladas: numero(r.toneladas), humedadNivel: nivelHumedad(r.humedadNivel), paladasOperativas: numero(r.paladasOperativas), activo: true }))]);
+        if (!sharedDefinitionRef.current) setPosicionConos(prev => {
           const nuevos = remoto.stock.conos.filter(r => !prev[r.id]);
           return Object.fromEntries([...Object.entries(prev), ...nuevos.map((r, i) =>
             [r.id, { x: 335 + (Object.keys(prev).length + i) * 50, y: 388, r: 19 }])]);
@@ -1061,33 +1069,46 @@ const App = () => {
       nombre, antesTon: redondear(antesTon), despuesTon: redondear(despuesTon), metodo }, ...prev]);
   };
 
+  const guardarAjustePlano = async (inicio, toneladas) => {
+    if (redondear(inicio.toneladas) === redondear(toneladas)) return;
+    if (ajustePlanoRef.current) { showToast('Esperá que termine el ajuste en curso.', 'error'); return; }
+    ajustePlanoRef.current = true;
+    try {
+      if (!pinPublicacion) throw new Error('Ingresá el PIN de publicación en el panel superior antes de ajustar stock.');
+      if (historialReportes.some(r => r.sincronizacion === 'pendiente')) throw new Error('Sincronizá los cierres pendientes antes de ajustar el inventario.');
+      const responsable = window.prompt('Responsable del ajuste de inventario:');
+      if (!responsable?.trim()) throw new Error('Ajuste cancelado: falta el responsable.');
+      const motivo = window.prompt('Motivo del ajuste (mínimo 5 caracteres):', inicio.metodo);
+      if (!motivo || motivo.trim().length < 5) throw new Error('Ajuste cancelado: falta un motivo válido.');
+      const result = await consultarAppsScript('adjustStock', { payload: { action: 'adjustStock', idAjuste: nuevoId(),
+        expectedEtag: inicio.etag ?? inventarioPlanoRef.current?.stockEtag, tipo: inicio.tipo ?? 'acopio', id: inicio.id,
+        toneladas, motivo: motivo.trim(), responsable: responsable.trim() } });
+      setAjustesManuales(prev => [{ id: nuevoId(), fecha: new Date().toISOString(), nombre: inicio.nombre,
+        antesTon: result.antesTon, despuesTon: result.despuesTon, metodo: motivo, responsable, origen: 'Google Sheets' }, ...prev]);
+      showToast('Ajuste guardado en Google Sheets para todos.');
+    } catch (error) { showToast(error.message, 'error'); }
+    finally {
+      ajustePlanoRef.current = false;
+      try { recibirInventarioPlano(await consultarAppsScript('getMap')); } catch { showToast('No se pudo verificar el saldo. Actualizá la conexión antes de otro ajuste.', 'error'); }
+      window.dispatchEvent(new Event('mes-map-refresh'));
+    }
+  };
   const finalizarEdicionStock = () => {
     const inicio = inicioEdicionStockRef.current;
     inicioEdicionStockRef.current = null;
     if (!inicio) return;
-    const actual = dataRef.current.stockPlaya.find(a => a.id === inicio.id);
-    if (actual) registrarAjusteManual(actual.nombre, inicio.toneladas, actual.toneladas, inicio.metodo);
+    const actual = (inicio.tipo === 'cono' ? dataRef.current.stockSilos : dataRef.current.stockPlaya).find(a => a.id === inicio.id);
+    if (actual) guardarAjustePlano(inicio, actual.toneladas);
   };
-
-  const aplicarDeltaManual = (signo) => {
+  const aplicarDeltaManual = signo => {
     if (!acopioSeleccionadoPlano) return;
     const delta = Math.round(Math.abs(Number(deltaPaladasInput) || 0)) * signo;
     if (!delta) return;
     const nuevasPaladas = Math.max(0, (acopioSeleccionadoPlano.paladas || 0) + delta);
-    const m3 = nuevasPaladas * 3.0;
-    const ton = calcularM3aTon(m3, acopioSeleccionadoPlano);
-
-    setStockPlaya(prev => prev.map(a => {
-      if (a.id === acopioSeleccionadoPlano.id) {
-        const updated = { ...a, paladas: nuevasPaladas, m3Estimados: m3, toneladas: ton };
-        setAcopioSeleccionadoPlano(updated);
-        return updated;
-      }
-      return a;
-    }));
-    registrarAjusteManual(acopioSeleccionadoPlano.nombre, numero(acopioSeleccionadoPlano.toneladas), ton,
-      delta > 0 ? 'Suma manual de paladas' : 'Resta manual de paladas');
-    showToast(`Stock de "${acopioSeleccionadoPlano.nombre}" actualizado.`);
+    const ton = calcularM3aTon(nuevasPaladas * 3, acopioSeleccionadoPlano);
+    guardarAjustePlano({ id: acopioSeleccionadoPlano.id, nombre: acopioSeleccionadoPlano.nombre,
+      toneladas: acopioSeleccionadoPlano.toneladas, etag: inventarioPlanoRef.current?.stockEtag,
+      metodo: delta > 0 ? 'Suma manual de paladas' : 'Resta manual de paladas' }, ton);
   };
 
   const iniciarControl = (fecha) => {
@@ -1777,10 +1798,46 @@ const App = () => {
     </main>;
   };
 
+  useEffect(() => {
+    if (hydrated && currentView === 'planning') setReservasPlano(plan.recetasAcopio);
+  }, [hydrated, plan.recetasAcopio]);
+
+  const crearPlanoActual = () => extractSharedMap({ verticesPoligono, sectoresVirtuales, posicionNaveMolienda, posicionSiloConos,
+    posicionCajones, posicionConos, elementosMapa, stockPlaya, stockSilos, reservas: reservasPlano,
+    densidadTierra, escalaCalidad, caracteristicasTierra });
+  const obtenerSeleccionPlano = () => acopioSeleccionadoPlano;
+  const obtenerSilosPlano = () => stockSilos;
+  const aplicarPlanoCompartido = map => {
+    sharedDefinitionRef.current = map;
+    setVerticesPoligono(map.verticesPoligono); setSectoresVirtuales(map.sectoresVirtuales);
+    setPosicionNaveMolienda(map.posicionNaveMolienda); setPosicionSiloConos(map.posicionSiloConos);
+    setPosicionCajones(map.posicionCajones); setPosicionConos(map.posicionConos); setElementosMapa(map.elementosMapa);
+    setStockPlaya(prev => mergeMapItems(prev, map.acopios, { toneladas: 0, m3Estimados: 0, paladas: 0 }).map(a => historialReportes.some(r => r.sincronizacion === 'pendiente') ? a : withInventory(a, inventarioPlanoRef.current?.stock.acopios, map.parametros.densidadTierra)));
+    setStockSilos(prev => mergeMapItems(prev, map.conos, { toneladas: 0, paladasOperativas: 0, humedadNivel: 1 }).map(a => historialReportes.some(r => r.sincronizacion === 'pendiente') ? a : withInventory(a, inventarioPlanoRef.current?.stock.conos, map.parametros.densidadTierra)));
+    setReservasPlano(map.reservas);
+    setDensidadTierra(map.parametros.densidadTierra); setEscalaCalidad(map.parametros.escalaCalidad);
+    setCaracteristicasTierra(map.parametros.caracteristicasTierra);
+  };
+  const recibirInventarioPlano = snapshot => {
+    inventarioPlanoRef.current = snapshot;
+    setInventarioPlano(snapshot.stock);
+    if (ajustePlanoRef.current || inicioEdicionStockRef.current || historialReportes.some(r => r.sincronizacion === 'pendiente')) return;
+    setStockPlaya(prev => prev.map(a => withInventory(a, snapshot.stock.acopios, densidadTierra)));
+    setStockSilos(prev => prev.map(a => withInventory(a, snapshot.stock.conos, densidadTierra)));
+    setStockCajon2(snapshot.stock.cajon2);
+  };
+
   const renderPlanoPlaya = (editar = false) => {
-    const acopiosPlano = stockPlaya.filter(a => a.enPlano !== false);
+    if (!editar && !planoPublicado) return <div className="p-8">Todavía no se cargó un plano compartido. Revisá el estado de conexión de arriba. El supervisor debe publicar el plano inicial desde el editor.</div>;
+    const vista = !editar && planoPublicado ? planoPublicado : crearPlanoActual();
+    const { verticesPoligono, sectoresVirtuales, posicionNaveMolienda, posicionSiloConos, posicionCajones, posicionConos, elementosMapa } = vista;
+    const stockSilos = editar ? obtenerSilosPlano().filter(s => s.enPlano !== false) : vista.conos.map(s => withInventory(s, inventarioPlano?.conos, vista.parametros.densidadTierra));
+
+    const acopiosPlano = editar ? stockPlaya.filter(a => a.enPlano !== false) : vista.acopios.map(a => withInventory(a, inventarioPlano?.acopios, vista.parametros.densidadTierra));
+    const seleccion = obtenerSeleccionPlano();
+    const acopioSeleccionadoPlano = acopiosPlano.find(a => String(a.id) === String(seleccion?.id)) ?? (seleccion?.esFuturo ? seleccion : null);
     const modoMapa = editar ? mapInteractionMode : 'view';
-    const recetasPendientes = plan.recetasAcopio.filter(
+    const recetasPendientes = vista.reservas.filter(
       rec => !acopiosPlano.some(a => a.nombre.toLowerCase().trim() === rec.nombreNuevoAcopio.toLowerCase().trim())
     );
     const objetoPlano = objetoSeleccionadoPlano?.tipo === 'nave' ? posicionNaveMolienda
@@ -1800,16 +1857,6 @@ const App = () => {
     return (
       <div className={`min-h-screen ${themeClasses.bg} p-4 md:p-8 flex flex-col transition-colors duration-300 select-none relative`}>
         <div className="max-w-7xl mx-auto w-full flex flex-col flex-1 space-y-6">
-          <SharedMapPanel editing={editar} request={consultarAppsScript}
-            draft={extractSharedMap({ verticesPoligono, sectoresVirtuales, posicionNaveMolienda, posicionSiloConos, posicionCajones, posicionConos, elementosMapa, stockPlaya: acopiosPlano })}
-            onApply={map => {
-              setVerticesPoligono(map.verticesPoligono); setSectoresVirtuales(map.sectoresVirtuales);
-              setPosicionNaveMolienda(map.posicionNaveMolienda); setPosicionSiloConos(map.posicionSiloConos);
-              setPosicionCajones(map.posicionCajones); setPosicionConos(map.posicionConos); setElementosMapa(map.elementosMapa);
-              setStockPlaya(prev => [...map.acopios.map(a => ({ toneladas: 0, m3Estimados: 0, paladas: 0, calidades: {}, textura: { arcilla: 0, arena: 0, limo: 0 },
-                ...prev.find(x => String(x.id) === String(a.id)), ...a, enPlano: true })),
-                ...prev.filter(x => !map.acopios.some(a => String(a.id) === String(x.id))).map(x => ({ ...x, enPlano: false }))]);
-            }} />
           <header className={`${themeClasses.card} p-6 rounded-3xl border flex flex-wrap justify-between items-center gap-4 relative z-40 `}>
             <div>
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/15 text-cyan-400 text-xs font-black uppercase tracking-wider mb-2 border border-cyan-500/30">
@@ -2415,11 +2462,9 @@ const App = () => {
                       <label className="block text-sm text-slate-400">Toneladas medidas
                         <input type="number" min="0" value={stockSilos.find(s => s.id === objetoSeleccionadoPlano.id)?.toneladas ?? 0}
                           onFocus={() => { const s = stockSilos.find(x => x.id === objetoSeleccionadoPlano.id);
-                            inicioEdicionStockRef.current = { tipo: 'cono', id: s.id, nombre: s.nombre,
+                            inicioEdicionStockRef.current = { tipo: 'cono', id: s.id, nombre: s.nombre, etag: inventarioPlanoRef.current?.stockEtag,
                               toneladas: numero(s.toneladas), metodo: 'Corrección directa de cono' }; }}
-                          onBlur={() => { const ini = inicioEdicionStockRef.current; inicioEdicionStockRef.current = null;
-                            if (ini) { const actual = dataRef.current.stockSilos.find(s => s.id === ini.id);
-                              if (actual) registrarAjusteManual(actual.nombre, ini.toneladas, actual.toneladas, ini.metodo); } }}
+                          onBlur={finalizarEdicionStock}
                           onChange={e => setStockSilos(prev => prev.map(s => s.id === objetoSeleccionadoPlano.id
                             ? { ...s, toneladas: Math.max(0, numero(e.target.value)),
                               paladasOperativas: numero(s.toneladas) > 0 ? Math.round(numero(s.paladasOperativas) * Math.max(0, numero(e.target.value)) / numero(s.toneladas)) : 0 } : s))}
@@ -2498,7 +2543,7 @@ const App = () => {
                           return showToast('Para quitar un acopio, conciliá primero sus toneladas.', 'error');
                         if (plan.camiones.some(c => clave(c.destino) === clave(acopioSeleccionadoPlano.nombre)))
                           return showToast('El acopio figura como destino en el plan. Cambiá esos camiones antes de quitarlo.', 'error');
-                        setStockPlaya(prev => prev.filter(a => a.id !== acopioSeleccionadoPlano.id));
+                        setStockPlaya(prev => prev.map(a => a.id === acopioSeleccionadoPlano.id ? { ...a, enPlano: false } : a));
                         setAcopioSeleccionadoPlano(null);
                       }}>Quitar acopio vacío</button>
                   </div>
@@ -2681,7 +2726,7 @@ const App = () => {
                           type="number"
                           min="0"
                           value={acopioSeleccionadoPlano.paladas || 0}
-                          onFocus={() => { inicioEdicionStockRef.current = { id: acopioSeleccionadoPlano.id,
+                          onFocus={() => { inicioEdicionStockRef.current = { id: acopioSeleccionadoPlano.id, nombre: acopioSeleccionadoPlano.nombre, etag: inventarioPlanoRef.current?.stockEtag,
                             toneladas: numero(acopioSeleccionadoPlano.toneladas), metodo: 'Corrección directa por paladas' }; }}
                           onBlur={finalizarEdicionStock}
                           onChange={(e) => {
@@ -2700,7 +2745,7 @@ const App = () => {
                           type="number"
                           min="0"
                           value={acopioSeleccionadoPlano.toneladas || 0}
-                          onFocus={() => { inicioEdicionStockRef.current = { id: acopioSeleccionadoPlano.id,
+                          onFocus={() => { inicioEdicionStockRef.current = { id: acopioSeleccionadoPlano.id, nombre: acopioSeleccionadoPlano.nombre, etag: inventarioPlanoRef.current?.stockEtag,
                             toneladas: numero(acopioSeleccionadoPlano.toneladas), metodo: 'Corrección directa en toneladas' }; }}
                           onBlur={finalizarEdicionStock}
                           onChange={(e) => {
@@ -2940,6 +2985,7 @@ const App = () => {
             setAjustesManuales(prev => [{ id: idAjuste, fecha: new Date().toISOString(), tipo: ajustePropuesto.tipo,
               nombre: base.nombre, antesTon: resultado.antesTon, despuesTon: resultado.despuesTon,
               metodo: ajustePropuesto.motivo.trim(), responsable: ajustePropuesto.responsable.trim(), origen: 'Google Sheets' }, ...prev]);
+            window.dispatchEvent(new Event('mes-map-refresh'));
             setAjustePropuesto(p => ({ ...p, toneladas: '', motivo: '' })); await cargarEstadoSheet(); showToast('Ajuste registrado y stock actualizado en la planilla.');
           } catch (error) { showToast(error.message, 'error'); await cargarEstadoSheet(); } finally { setGuardandoAjuste(false); } }}
           className="px-4 py-2 rounded-lg bg-cyan-600 text-white font-semibold disabled:opacity-40">{guardandoAjuste ? 'Registrando…' : 'Confirmar ajuste en Google Sheets'}</button></section>
@@ -5258,6 +5304,12 @@ const App = () => {
         </div>
         <button type="button" className="mes-topbar-config" onClick={() => { setPinDestino('catalogos'); setModalPinAbierto(true); }} aria-label="Configuración"><Icons.Settings /></button>
       </nav>}
+      {hydrated && <SharedMapPanel draft={crearPlanoActual()}
+        editing={configDesbloqueada && mapaDesbloqueado} authorizeStock={currentView === 'conciliacion'}
+        visible={['planoPlaya','editorPlano','conciliacion'].includes(currentView)}
+        request={consultarAppsScript} onApply={aplicarPlanoCompartido} onInventory={recibirInventarioPlano}
+        onPublished={setPlanoPublicado} onStatus={status => setEstadoPlano(prev => ({ ...prev, ...status }))}
+        pin={pinPublicacion} onPin={setPinPublicacion} />}
       {/* Ruteador de Vistas */}
       {currentView === 'welcome' && renderWelcome()}
       {currentView === 'dashboard' && renderDashboard()}

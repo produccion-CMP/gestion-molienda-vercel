@@ -1,3 +1,5 @@
+import { timingSafeEqual } from 'node:crypto';
+
 export const maxDuration = 60;
 export const runtime = 'nodejs';
 
@@ -18,6 +20,12 @@ export async function POST(request) {
   if (!['state', 'historical', 'getMap', 'saveMap', 'saveAudit', 'initializeCones', 'adjustStock', 'saveRecipient', 'generateReport', 'sendReport',
     'saveTelegramRecipient', 'saveReminder', 'completeReminder'].includes(body.action))
     return Response.json({ ok: false, error: 'Acción no permitida' }, { status: 400 });
+  if (['saveMap', 'adjustStock'].includes(body.action)) {
+    const expected = process.env.MES_MAP_PIN;
+    if (!expected || expected.length < 8) return Response.json({ ok: false, error: 'Configurá MES_MAP_PIN en Vercel con al menos 8 caracteres.' }, { status: 503 });
+    const a = Buffer.from(String(body.mapPin || '')), b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a,b)) return Response.json({ ok: false, error: 'PIN de publicación incorrecto.' }, { status: 401 });
+  }
   const token = process.env.MES_SYNC_TOKEN;
   if (!token) return Response.json({ ok: false, error: 'Falta MES_SYNC_TOKEN en los secretos del servidor.' }, { status: 503 });
   try {
@@ -25,7 +33,7 @@ export async function POST(request) {
     let response;
     if (!['state', 'historical', 'getMap'].includes(body.action)) {
       response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ ...body.payload, token }), signal: AbortSignal.timeout(45000) });
+        body: JSON.stringify({ ...body.payload, action: body.action, token }), signal: AbortSignal.timeout(45000) });
     } else {
       url.searchParams.set('action', body.action);
       url.searchParams.set('token', token);
@@ -33,7 +41,7 @@ export async function POST(request) {
         if (Number.isInteger(body.gid)) url.searchParams.set('gid', String(body.gid));
         if (Number.isInteger(body.offset) && body.offset >= 0) url.searchParams.set('offset', String(body.offset));
       }
-      response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(30000) });
     }
     if (!response.ok) throw new Error(`Google respondió HTTP ${response.status}`);
     const text = await response.text();
