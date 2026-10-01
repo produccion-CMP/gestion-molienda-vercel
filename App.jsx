@@ -512,9 +512,6 @@ const App = () => {
   const [mapaDesbloqueado, setMapaDesbloqueado] = useState(false);
   const [configDesbloqueada, setConfigDesbloqueada] = useState(false);
   const [pinDestino, setPinDestino] = useState('catalogos');
-  const [consultaAyuda, setConsultaAyuda] = useState('');
-  const [respuestaAyuda, setRespuestaAyuda] = useState('');
-  const [ayudaOcupada, setAyudaOcupada] = useState(false);
   const [comentariosMejora, setComentariosMejora] = useState([]);
   const [comentarioNuevo, setComentarioNuevo] = useState('');
 
@@ -535,8 +532,6 @@ const App = () => {
   const [deltaPaladasInput, setDeltaPaladasInput] = useState(10);
   const [camionMapaId, setCamionMapaId] = useState(null);
   const [traspasoCono, setTraspasoCono] = useState({ origenId: '', destinoId: '' });
-  const [sugerenciaIndicaciones, setSugerenciaIndicaciones] = useState(null);
-  const [organizandoIndicaciones, setOrganizandoIndicaciones] = useState(false);
   const closingRef = useRef(false);
   const inicioEdicionStockRef = useRef(null);
   const dataRef = useRef({ stockPlaya, stockSilos, stockCajon2 });
@@ -726,18 +721,6 @@ const App = () => {
     catch { throw new Error('El servidor devolvió una página HTML en lugar de datos. Revisá el despliegue del sitio y actualizá la implementación de Apps Script con Code.gs; luego volvé a consultar.'); }
     if (!response.ok || result.ok !== true) throw new Error(result.error || `HTTP ${response.status}`);
     return result;
-  };
-
-  const organizarIndicaciones = async () => {
-    setOrganizandoIndicaciones(true);
-    try {
-      const response = await fetch('/api/organize-note', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ texto: plan.observacionSemanal }) });
-      const data = await response.json();
-      if (!response.ok || !data.ok) throw new Error(data.error || 'No se pudo procesar el texto.');
-      setSugerenciaIndicaciones(data);
-    } catch (error) { showToast(error.message, 'error'); }
-    finally { setOrganizandoIndicaciones(false); }
   };
 
   const cargarEstadoSheet = async () => {
@@ -1771,10 +1754,10 @@ const App = () => {
             <section className="mes-aside-card mes-aside-weather">
               <div className="mes-aside-top"><span className="mes-aside-icon"><Icons.Sun /></span><span>PLANIFICACIÓN DE PLAYA</span></div>
               <h3>Pronóstico del tiempo</h3>
-              <p>Comparativa automática de The Weather Channel y AccuWeather para planificar descargas y trabajos de suelo.</p>
+              <p>Pronóstico de MET Norway para planificar descargas y trabajos de suelo.</p>
               {diasClima.length ? <div className="mes-weather-days">
                 {diasClima.map(d => <div key={d.fecha}><span>{new Date(`${d.fecha}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric' })}</span>
-                  <strong>{d.max === null ? '—' : `${d.max}°`}</strong><em>{d.lluvia === null ? 'Lluvia —' : `${d.lluvia}% lluvia`}</em></div>)}
+                  <strong>{d.max === null ? '—' : `${d.max}°`}</strong><em>{describirPronostico(d.descripcion).texto}</em></div>)}
                 <small>Última consulta: {lecturasClima.actualizado ? new Date(lecturasClima.actualizado).toLocaleString('es-AR') : 'sin fecha'}</small>
               </div> : <div className="mes-weather-status">Conexión de proveedores pendiente</div>}
               <button type="button" className="mes-text-link" onClick={() => setCurrentView('clima')}>Abrir pronóstico <Icons.ArrowRight /></button>
@@ -3028,47 +3011,17 @@ const App = () => {
     </div>;
   };
 
-  const consultarAsistente = async () => {
-    if (!consultaAyuda.trim() || ayudaOcupada) return;
-    setAyudaOcupada(true); setRespuestaAyuda(null);
-    try {
-      const response = await fetch('/api/assistant', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ consulta: consultaAyuda, ensenanzas: comentariosMejora.filter(c => c.tipo === 'enseñanza').map(c => c.texto) }) });
-      const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.error ?? 'No se pudo consultar la ayuda.');
-      setRespuestaAyuda(result);
-    } catch (error) { showToast(error.message, 'error'); }
-    finally { setAyudaOcupada(false); }
-  };
-
   const renderAsistente = () => <div className={`min-h-screen ${themeClasses.bg} p-4 md:p-8`}><div className="max-w-4xl mx-auto space-y-5">
     <header className="flex justify-between gap-3"><div><h2 className="text-2xl font-black">Ayuda y mejoras</h2>
-      <p className="text-sm text-slate-400">Consultá cómo usar el sistema y revisá cada acción sugerida antes de aplicarla.</p></div>
+      <p className="text-sm text-slate-400">Consultá la guía del sistema y registrá sugerencias de mejora.</p></div>
       <button className="text-sm underline" onClick={() => setCurrentView('dashboard')}>Volver al panel</button></header>
     <section className={`${themeClasses.card} border rounded-2xl p-5 space-y-3`}><h3 className="font-bold">Guía rápida</h3>
       <ul className="text-sm text-slate-300 space-y-1"><li>Planificación: asigná turnos, tareas, nuevos acopios, camiones e indicaciones.</li>
         <li>Plano: consultá la ubicación. Desbloqueá con PIN para editar límites, acopios, cajones y conos.</li>
         <li>Auditoría: verificá asistencia, tareas, ingresos, paladas y paradas antes del cierre.</li>
         <li>Silos: conciliá mediciones y balance; Pizarrón: programá avisos y registrá tareas realizadas.</li></ul></section>
-    <section className={`${themeClasses.card} border rounded-2xl p-5 space-y-3`}><h3 className="font-bold">Consultar a la IA</h3>
-      <textarea rows={3} value={consultaAyuda} maxLength={2000} onChange={e => setConsultaAyuda(e.target.value)}
-        placeholder="Ejemplo: ¿cómo registro una descarga o planifico un acopio?" className={`w-full p-3 rounded-xl ${themeClasses.input}`} />
-      <button disabled={ayudaOcupada || !consultaAyuda.trim()} onClick={consultarAsistente} className="px-4 py-2 rounded-xl bg-cyan-600 text-white text-sm font-bold">
-        {ayudaOcupada ? 'Preparando respuesta…' : 'Consultar'}</button>
-      {respuestaAyuda && <div className="border border-cyan-500/40 rounded-xl p-4 space-y-3" role="status"><p className="whitespace-pre-wrap text-sm">{respuestaAyuda.respuesta}</p>
-        {respuestaAyuda.accion !== 'ninguna' && <div className="flex flex-wrap items-center gap-3 border-t border-slate-700 pt-3 text-sm">
-          <span>Acción propuesta: {respuestaAyuda.accion.replaceAll('_', ' ')}</span>
-          <button className="px-3 py-2 bg-emerald-600 text-white rounded-lg" onClick={() => {
-            const vistas = { abrir_plano: 'planoPlaya', abrir_planificacion: 'planning', abrir_auditoria: 'control' };
-            if (respuestaAyuda.accion === 'crear_recordatorio') {
-              setNuevoRecordatorio({ para: 'Todos', texto: respuestaAyuda.textoPropuesto, prioridad: 'normal', fechaAviso: '', horaAviso: '' });
-              setModalNuevoRecordatorioAbierto(true);
-            } else if (vistas[respuestaAyuda.accion]) setCurrentView(vistas[respuestaAyuda.accion]);
-            setRespuestaAyuda(null);
-          }}>Revisar y continuar</button><button className="underline" onClick={() => setRespuestaAyuda(null)}>Descartar</button></div>}</div>}
-      <p className="text-xs text-slate-400">Requiere una clave OpenAI guardada en el servidor. La IA no cambia inventarios, auditorías ni configuraciones por sí sola.</p></section>
     <section className={`${themeClasses.card} border rounded-2xl p-5 space-y-3`}><h3 className="font-bold">Comentarios y enseñanzas</h3>
-      <p className="text-sm text-slate-400">Guardá una mejora propuesta o una aclaración operativa. Las enseñanzas se incluyen como contexto en futuras consultas de este navegador; no entrenan el modelo ni se convierten en hechos validados.</p>
+      <p className="text-sm text-slate-400">Guardá una mejora propuesta o una aclaración operativa. Los comentarios y aclaraciones se conservan en este navegador para su revisión.</p>
       <textarea rows={2} maxLength={800} value={comentarioNuevo} onChange={e => setComentarioNuevo(e.target.value)}
         placeholder="Ejemplo: en nuestra planta, esta tarea se verifica al inicio de T2…" className={`w-full p-3 rounded-xl ${themeClasses.input}`} />
       <div className="flex gap-2"><button disabled={!comentarioNuevo.trim()} className="px-3 py-2 bg-slate-700 text-white rounded-lg text-xs" onClick={() => {
@@ -3086,7 +3039,7 @@ const App = () => {
     const fuente = lecturaActual ? lecturasClima.met ?? {} : {};
     const dias = (fuente.dias ?? []).slice(0, 7);
     const diagnostico = dias.length ? dias.map(d =>
-      `${new Date(`${d.fecha}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric' })}: ${d.lluvia === null ? describirPronostico(d.descripcion).texto.toLowerCase() + ' (sin porcentaje publicado)' : d.lluvia >= 60 ? 'riesgo alto de lluvia; proteger acopios' : d.lluvia >= 30 ? 'riesgo moderado; verificar playa' : 'riesgo bajo; revisar humedad real'}`).join(' · ')
+      `${new Date(`${d.fecha}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric' })}: ${describirPronostico(d.descripcion).texto.toLowerCase()}`).join(' · ')
       : 'El pronóstico estará disponible cuando responda MET Norway.';
     return <div className={`min-h-screen ${themeClasses.bg} p-4 md:p-8`}><div className="max-w-5xl mx-auto space-y-6">
       <header className="flex flex-wrap justify-between items-center gap-3"><div>
@@ -3111,13 +3064,13 @@ const App = () => {
         <span className="text-xs text-slate-400" role="status">{geoClimaEstado || (climaZona === 'mejor' && lecturaActual && dias.length ? `Datos más completos: ${ubicacion.nombre}. ` : '') + (cargandoClima ? 'Consultando pronóstico…' : errorClima ? 'Sin actualización disponible' : 'Actualización automática al ingresar')}</span>
       </div>
       <section className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-5"><h3 className="text-sm font-black text-emerald-400 uppercase mb-2">Planificación orientativa</h3><p className="text-sm leading-relaxed">{diagnostico}</p>
-        <p className="text-sm text-slate-400 mt-2">Los símbolos señalan condiciones previstas, no equivalen a un porcentaje de lluvia. Verificá la playa y la tierra antes de descargar o mover acopios.</p></section>
+        <p className="text-sm text-slate-400 mt-2">Los símbolos señalan las condiciones previstas por el modelo. Verificá la playa y la tierra antes de descargar o mover acopios.</p></section>
       {dias[0] && <section className={`${themeClasses.card} border rounded-2xl p-5 space-y-3`}><h3 className="text-lg font-bold">Hoy, hora por hora</h3>
         <p className="text-sm text-slate-400">{new Date(`${dias[0].fecha}T12:00:00`).toLocaleDateString('es-AR', { dateStyle: 'full' })} · intervalos disponibles del modelo para {ubicacion.nombre}.</p>
         <div className="flex gap-2 overflow-x-auto pb-2">{(dias[0].horas ?? []).map((h, i) => { const v = describirPronostico(h.simbolo);
           return <div key={`${h.hora}-${i}`} className="min-w-32 border border-slate-700 bg-slate-800/60 rounded-xl p-3 text-sm space-y-1"><strong>{h.hora}</strong>
             <div><span aria-hidden="true">{v.emoji}</span> {h.temperatura == null ? '—' : `${Math.round(h.temperatura)}°`}</div>
-            <p className="text-xs">{v.texto}</p><p className="text-xs">Prob. lluvia: {h.probabilidad == null ? 'sin dato' : `${h.probabilidad}%`}</p>
+            <p className="text-xs">{v.texto}</p>
             <p className="text-xs">Agua: {h.lluviaMm == null ? 'sin dato' : `${h.lluviaMm} mm`}</p></div>; })}</div>
       </section>}
       <section className={`${themeClasses.card} border rounded-2xl p-5 space-y-3`}>
@@ -3128,10 +3081,10 @@ const App = () => {
           return <div key={d.fecha} className="rounded-xl border border-slate-700 bg-slate-800/60 p-4">
             <div className="flex justify-between items-center gap-3"><strong>{new Date(`${d.fecha}T12:00:00`).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'short' })}</strong><strong>{d.max ?? '—'}° / {d.min ?? '—'}°</strong></div>
             <p className="text-sm mt-2"><span aria-hidden="true" className="text-xl mr-2">{visual.emoji}</span>{visual.texto}</p>
-            <div className="mt-2 flex flex-wrap gap-3 text-sm text-slate-300"><span>Lluvia {d.lluvia == null ? 'sin dato' : `${d.lluvia}%`}</span><span>Agua {d.lluviaMm == null ? 'sin dato' : `${d.lluviaMm} mm`}</span><span>Humedad {d.humedad == null ? '—' : `${d.humedad}%`}</span><span>Viento {d.viento == null ? '—' : `${d.viento} km/h`}</span></div>
+            <div className="mt-2 flex flex-wrap gap-3 text-sm text-slate-300"><span>Agua {d.lluviaMm == null ? 'sin dato' : `${d.lluviaMm} mm`}</span><span>Humedad {d.humedad == null ? '—' : `${d.humedad}%`}</span><span>Viento {d.viento == null ? '—' : `${d.viento} km/h`}</span></div>
           </div>; })}</div>
         {!dias.length && <p className="text-sm text-slate-400">{cargandoClima ? 'Consultando pronóstico…' : 'El pronóstico no está disponible por ahora. Se intentará de nuevo al ingresar.'}</p>}
-        <p className="text-xs text-slate-400">Máximas y mínimas calculadas de intervalos publicados. Si no se informa probabilidad o faltan intervalos para la lluvia acumulada, se muestra «sin dato».</p>
+        <p className="text-xs text-slate-400">Máximas y mínimas calculadas de intervalos publicados. Si faltan intervalos para calcular la lluvia acumulada, se muestra «sin dato».</p>
       </section>
       <section className={`${themeClasses.card} border rounded-2xl p-5 space-y-2`}><h3 className="font-bold">Consultar otros sitios</h3>
         <p className="text-sm text-slate-400">Estos enlaces abren el pronóstico externo en otra pestaña; sus cifras no se copian ni se mezclan con MET Norway.</p>
@@ -3754,20 +3707,9 @@ const App = () => {
             <p className="text-sm text-slate-400">Explicá prioridades, restricciones, secuencia de trabajo o cualquier novedad que deban conocer los tres turnos.</p>
             <textarea rows={9} value={plan.observacionSemanal ?? ''}
               spellCheck="true" lang="es-AR"
-              onChange={e => { setPlan(prev => ({ ...prev, observacionSemanal: e.target.value, indicacionesEstructuradas: [] })); setSugerenciaIndicaciones(null); }}
+              onChange={e => { setPlan(prev => ({ ...prev, observacionSemanal: e.target.value, indicacionesEstructuradas: [] })); }}
               placeholder="Ej.: priorizar el secado de la zona norte antes de recibir los camiones..."
               className={`w-full rounded-xl p-4 text-base ${themeClasses.input}`} />
-            <button type="button" onClick={organizarIndicaciones} disabled={organizandoIndicaciones || !plan.observacionSemanal?.trim()}
-              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">{organizandoIndicaciones ? 'Organizando…' : 'Corregir y estructurar con IA'}</button>
-            {sugerenciaIndicaciones && <section className={`${themeClasses.cardSecondary} border rounded-xl p-4 space-y-3`}>
-              <h4 className="font-semibold">Propuesta para revisar</h4><p className="whitespace-pre-wrap text-sm">{sugerenciaIndicaciones.texto}</p>
-              <div className="space-y-1">{sugerenciaIndicaciones.tareas.map((t,i) => <p key={i} className="text-sm">
-                <strong>{t.categoria}</strong> · {t.descripcion}{t.sector ? ` · ${t.sector}` : ''}{t.turno ? ` · ${t.turno}` : ''}</p>)}</div>
-              <button type="button" onClick={() => { setPlan(prev => ({ ...prev, observacionOriginal: prev.observacionSemanal,
-                observacionSemanal: sugerenciaIndicaciones.texto, indicacionesEstructuradas: sugerenciaIndicaciones.tareas.map(t => ({ ...t, validada: false })) }));
-                setSugerenciaIndicaciones(null); }} className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white">Aceptar propuesta</button>
-              <button type="button" onClick={() => setSugerenciaIndicaciones(null)} className="ml-2 text-sm underline">Descartar</button>
-            </section>}
             {!!plan.indicacionesEstructuradas?.length && <section className={`${themeClasses.cardSecondary} border rounded-xl p-4 space-y-2`}>
               <h4 className="font-semibold">Acciones detectadas · pendientes de validación</h4>
               {plan.indicacionesEstructuradas.map((t,i) => <div key={i} className="flex flex-wrap gap-3 items-center text-sm border-t border-slate-600/40 pt-2">
