@@ -1,4 +1,6 @@
 "use client";
+import SharedMapPanel from './components/SharedMapPanel.jsx';
+import { extractSharedMap } from './lib/shared-map.js';
 import React, { useState, useEffect, useRef } from 'react';
 import { VALIDATED } from './lib/validated-data.js';
 import { describirPronostico } from './lib/weather.js';
@@ -1776,9 +1778,10 @@ const App = () => {
   };
 
   const renderPlanoPlaya = (editar = false) => {
+    const acopiosPlano = stockPlaya.filter(a => a.enPlano !== false);
     const modoMapa = editar ? mapInteractionMode : 'view';
     const recetasPendientes = plan.recetasAcopio.filter(
-      rec => !stockPlaya.some(a => a.nombre.toLowerCase().trim() === rec.nombreNuevoAcopio.toLowerCase().trim())
+      rec => !acopiosPlano.some(a => a.nombre.toLowerCase().trim() === rec.nombreNuevoAcopio.toLowerCase().trim())
     );
     const objetoPlano = objetoSeleccionadoPlano?.tipo === 'nave' ? posicionNaveMolienda
       : objetoSeleccionadoPlano?.tipo === 'silo' ? posicionSiloConos
@@ -1797,6 +1800,16 @@ const App = () => {
     return (
       <div className={`min-h-screen ${themeClasses.bg} p-4 md:p-8 flex flex-col transition-colors duration-300 select-none relative`}>
         <div className="max-w-7xl mx-auto w-full flex flex-col flex-1 space-y-6">
+          <SharedMapPanel editing={editar} request={consultarAppsScript}
+            draft={extractSharedMap({ verticesPoligono, sectoresVirtuales, posicionNaveMolienda, posicionSiloConos, posicionCajones, posicionConos, elementosMapa, stockPlaya: acopiosPlano })}
+            onApply={map => {
+              setVerticesPoligono(map.verticesPoligono); setSectoresVirtuales(map.sectoresVirtuales);
+              setPosicionNaveMolienda(map.posicionNaveMolienda); setPosicionSiloConos(map.posicionSiloConos);
+              setPosicionCajones(map.posicionCajones); setPosicionConos(map.posicionConos); setElementosMapa(map.elementosMapa);
+              setStockPlaya(prev => [...map.acopios.map(a => ({ toneladas: 0, m3Estimados: 0, paladas: 0, calidades: {}, textura: { arcilla: 0, arena: 0, limo: 0 },
+                ...prev.find(x => String(x.id) === String(a.id)), ...a, enPlano: true })),
+                ...prev.filter(x => !map.acopios.some(a => String(a.id) === String(x.id))).map(x => ({ ...x, enPlano: false }))]);
+            }} />
           <header className={`${themeClasses.card} p-6 rounded-3xl border flex flex-wrap justify-between items-center gap-4 relative z-40 `}>
             <div>
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/15 text-cyan-400 text-xs font-black uppercase tracking-wider mb-2 border border-cyan-500/30">
@@ -1890,10 +1903,10 @@ const App = () => {
                 onClick={() => {
                   const nuevo = {
                     id: nuevoId(),
-                    nombre: `Acopio ${stockPlaya.length + 1}`,
+                    nombre: `Acopio ${acopiosPlano.length + 1}`,
                     sector: sectoresVirtuales[1]?.nombre || "Playa Logística Central",
-                    posX: 440 + ((stockPlaya.length % 3) * 40),
-                    posY: 140 + ((stockPlaya.length % 3) * 30),
+                    posX: 440 + ((acopiosPlano.length % 3) * 40),
+                    posY: 140 + ((acopiosPlano.length % 3) * 30),
                     radioBase: 30,
                     largoEje: 40,
                     pisos: 1,
@@ -2227,7 +2240,7 @@ const App = () => {
                   })}
 
                   {/* Acopios de Playa con Pendiente, Niveles de Pisos y Textura */}
-                  {stockPlaya.map((acopio) => {
+                  {acopiosPlano.map((acopio) => {
                     const isSelected = acopioSeleccionadoPlano?.id === acopio.id;
                     const rBase = acopio.radioBase || 32;
                     const lEje = acopio.largoEje || (rBase * 1.3);

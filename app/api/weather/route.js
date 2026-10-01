@@ -1,7 +1,7 @@
 import { normalizeMetNorway } from '../../../lib/weather.js';
 import { WEATHER_LOCATIONS } from '../../../lib/weather-locations.js';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 const caches = new Map();
 
 async function metNorway(zone, location) {

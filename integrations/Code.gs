@@ -59,7 +59,7 @@ function crearEstructuraHojas() {
   mesTab(book, 'MES_TelegramEnvios', MES_TELEGRAM_LOG_HEADER, true);
   mesTab(book, 'MES_Indicaciones', ['fecha','textoOriginal','textoAprobado','categoria','descripcion','sector','turno','validada','ID Cierre','Índice Cierre'], true);
   mesTab(book, 'MES_TransferenciasConos', ['fecha','origen','destino','paladas','toneladas','motivo','idCierre','indiceCierre'], true);
-  SpreadsheetApp.getUi().alert('Estructura verificada. No se modificaron datos existentes.');
+  console.log('Estructura verificada. No se modificaron datos existentes.');
 }
 
 function mesJson(data) {
@@ -388,7 +388,7 @@ function doGet(e) {
   try {
     if (e.parameter?.action === 'health') return mesJson({ ok: true, servicio: 'MES Molienda', version: 3 });
     if (!mesAuthorized(e.parameter?.token)) return mesJson({ ok: false, error: 'No autorizado' });
-    return mesJson(e.parameter.action === 'historical' ? mesHistorical(e) : mesState());
+    return mesJson(e.parameter.action === 'historical' ? mesHistorical(e) : e.parameter.action === 'getMap' ? mesReadMap(SpreadsheetApp.openById(MES_PRIMARY_ID)) : mesState());
   }
   catch (error) { return mesJson({ ok: false, error: error.message }); }
 }
@@ -398,6 +398,21 @@ function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
     if (!mesAuthorized(body.token)) throw new Error('No autorizado');
+    if (body.action === 'saveMap') {
+      if (!lock.tryLock(20000)) throw new Error('Plano ocupado. Reintentá.');
+      const book = SpreadsheetApp.openById(MES_PRIMARY_ID);
+      const current = mesReadMap(book);
+      if (!Number.isInteger(body.expectedRevision) || body.expectedRevision !== current.revision)
+        throw new Error('Conflicto de versión: otra persona publicó el plano. Cargá la versión compartida.');
+      mesValidateMap(body.map);
+      const text = JSON.stringify(body.map);
+      if (text.length > 45000) throw new Error('El plano supera el tamaño admitido.');
+      const tab = mesTab(book, 'MES_Planos', ['revision','actualizado','planoJSON'], true);
+      const revision = current.revision + 1;
+      const updatedAt = new Date().toISOString();
+      tab.appendRow([revision, updatedAt, text]);
+      return mesJson({ ok: true, mapProtocol: 1, revision, updatedAt });
+    }
     if (body.action === 'saveTelegramRecipient') {
       if (!lock.tryLock(20000)) throw new Error('Configuración ocupada. Reintentá.');
       const chatId = String(body.chatId || '').trim(), telefono = String(body.telefono || '').trim();
@@ -553,4 +568,97 @@ function doPost(e) {
     return mesJson({ ok: true, revision, etag: mesDigest(mesStock(book)) });
   } catch (error) { return mesJson({ ok: false, error: error.message }); }
   finally { if (lock.hasLock()) lock.releaseLock(); }
+}
+
+function mesTelegramCall(method, payload) {
+  const token = PropertiesService.getScriptProperties().getProperty('MES_TELEGRAM_BOT_TOKEN');
+  if (!token) throw new Error('Falta MES_TELEGRAM_BOT_TOKEN en Propiedades del proyecto.');
+  let response;
+  try {
+    response = UrlFetchApp.fetch('https://api.telegram.org/bot' + token + '/' + method, {
+      method: 'post', contentType: 'application/json', payload: JSON.stringify(payload || {}), muteHttpExceptions: true
+    });
+  } catch (_) { throw new Error('No se pudo conectar con Telegram. Revisá la conexión y los permisos.'); }
+  let data;
+  try { data = JSON.parse(response.getContentText()); } catch (_) { throw new Error('Respuesta de Telegram no válida.'); }
+  if (response.getResponseCode() !== 200 || !data.ok) throw new Error('Telegram rechazó la operación: HTTP ' + response.getResponseCode());
+  return data.result;
+}
+
+function verificarTelegram() {
+  const bot = mesTelegramCall('getMe');
+  console.log('Bot verificado: @' + bot.username);
+  return bot.username;
+}
+
+function prepararClaveSincronizacion() {
+  const props = PropertiesService.getScriptProperties();
+  if (!props.getProperty('MES_SYNC_TOKEN')) props.setProperty('MES_SYNC_TOKEN', Utilities.getUuid() + Utilities.getUuid());
+  console.log('MES_SYNC_TOKEN disponible en Propiedades del proyecto. Copialo solo al servidor.');
+}
+
+function instalarRegistroTelegram() {
+  verificarTelegram();
+  const webhook = mesTelegramCall('getWebhookInfo');
+  if (webhook.url) throw new Error('Este bot tiene un webhook activo. Usá un bot exclusivo para Molienda; no se modificó su conexión existente.');
+  if (!ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'registrarUsuariosTelegram'))
+    ScriptApp.newTrigger('registrarUsuariosTelegram').timeBased().everyMinutes(5).create();
+  console.log('Registro habilitado cada cinco minutos. Las altas quedan INACTIVAS hasta aprobación.');
+}
+
+function registrarUsuariosTelegram() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) return;
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const updates = mesTelegramCall('getUpdates', { offset: Number(props.getProperty('MES_TELEGRAM_OFFSET') || 0), limit: 100, timeout: 0, allowed_updates: ['message'] });
+    const book = SpreadsheetApp.openById(MES_PRIMARY_ID);
+    const tab = mesTab(book, 'Cat_Telegram', MES_TELEGRAM_HEADER, true);
+    const existing = new Set(mesTelegramRecipients(book).map(x => x.chatId));
+    updates.forEach(update => {
+      const message = update.message;
+      if (message && message.chat.type === 'private' && /^\/start(?:@\w+)?(?:\s|$)/.test(message.text || '')) {
+        const id = String(message.chat.id);
+        if (!existing.has(id)) {
+          const row = tab.getLastRow() + 1;
+          const name = [message.from.first_name, message.from.last_name].filter(Boolean).join(' ').replace(/^[=+@-]/, '');
+          tab.getRange(row, 1, 1, 5).setNumberFormat('@').setValues([[id, name, '', 'PENDIENTE', 'INACTIVO']]);
+          existing.add(id);
+        }
+      }
+      props.setProperty('MES_TELEGRAM_OFFSET', String(update.update_id + 1));
+    });
+    console.log('Registro revisado. Consultá Cat_Telegram; no se activaron usuarios automáticamente.');
+  } finally { lock.releaseLock(); }
+}
+
+function mesReadMap(book) {
+  const tab = book.getSheetByName('MES_Planos');
+  if (!tab || tab.getLastRow() < 2) return { ok: true, mapProtocol: 1, revision: 0, map: null };
+  const row = tab.getRange(tab.getLastRow(), 1, 1, 3).getValues()[0];
+  const map = JSON.parse(String(row[2]));
+  mesValidateMap(map);
+  const revision = Number(row[0]);
+  if (!Number.isInteger(revision) || revision < 1) throw new Error('La revisión del plano no es válida. Revisá MES_Planos.');
+  return { ok: true, mapProtocol: 1, revision, updatedAt: row[1] instanceof Date ? row[1].toISOString() : String(row[1]), map };
+}
+
+function mesValidateMap(map) {
+  const allowed = ['schema','verticesPoligono','sectoresVirtuales','posicionNaveMolienda','posicionSiloConos','posicionCajones','posicionConos','elementosMapa','acopios'];
+  if (!map || map.schema !== 1 || Object.keys(map).some(k => allowed.indexOf(k) < 0)) throw new Error('Formato del plano inválido.');
+  ['verticesPoligono','sectoresVirtuales','elementosMapa','acopios'].forEach(k => {
+    if (!Array.isArray(map[k]) || map[k].length > 300) throw new Error('Colección del plano inválida: ' + k);
+  });
+  if (map.verticesPoligono.length < 3) throw new Error('El límite debe tener al menos tres puntos.');
+  ['posicionNaveMolienda','posicionSiloConos','posicionCajones','posicionConos'].forEach(k => {
+    if (!map[k] || typeof map[k] !== 'object' || Array.isArray(map[k])) throw new Error('Posiciones inválidas: ' + k);
+  });
+  map.verticesPoligono.forEach(v => { if (!v || !Number.isFinite(v.x) || !Number.isFinite(v.y)) throw new Error('Coordenadas inválidas.'); });
+  const ids = new Set();
+  const acopioFields = ['id','nombre','sector','cuadrante','pisos','posX','posY','radioBase','largoEje','activo','esFuturo'];
+  map.acopios.forEach(a => {
+    if (!a || !a.id || typeof a.nombre !== 'string' || ids.has(String(a.id)) || Object.keys(a).some(k => acopioFields.indexOf(k) < 0)) throw new Error('Acopio de plano inválido.');
+    ['posX','posY','radioBase','largoEje'].forEach(k => { if (!Number.isFinite(a[k])) throw new Error('Geometría de acopio inválida.'); });
+    ids.add(String(a.id));
+  });
 }

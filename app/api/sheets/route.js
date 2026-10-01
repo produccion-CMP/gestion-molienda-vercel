@@ -1,4 +1,5 @@
-export const runtime = 'edge';
+export const maxDuration = 60;
+export const runtime = 'nodejs';
 
 const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx0KsVei3Nz-z9qpEu-Pot10qEKTQKJqOl93wsTXdOWHaCM80jnw-wqrTRPrS8zue36/exec';
 const isAppsScriptUrl = raw => {
@@ -14,7 +15,7 @@ export async function POST(request) {
   let body;
   try { body = await request.json(); } catch { return Response.json({ ok: false, error: 'JSON inválido' }, { status: 400 }); }
   if (!isAppsScriptUrl(body.url)) return Response.json({ ok: false, error: 'URL de Apps Script inválida' }, { status: 400 });
-  if (!['state', 'historical', 'saveAudit', 'initializeCones', 'adjustStock', 'saveRecipient', 'generateReport', 'sendReport',
+  if (!['state', 'historical', 'getMap', 'saveMap', 'saveAudit', 'initializeCones', 'adjustStock', 'saveRecipient', 'generateReport', 'sendReport',
     'saveTelegramRecipient', 'saveReminder', 'completeReminder'].includes(body.action))
     return Response.json({ ok: false, error: 'Acción no permitida' }, { status: 400 });
   const token = process.env.MES_SYNC_TOKEN;
@@ -22,7 +23,7 @@ export async function POST(request) {
   try {
     const url = new URL(body.url);
     let response;
-    if (!['state', 'historical'].includes(body.action)) {
+    if (!['state', 'historical', 'getMap'].includes(body.action)) {
       response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({ ...body.payload, token }), signal: AbortSignal.timeout(45000) });
     } else {
