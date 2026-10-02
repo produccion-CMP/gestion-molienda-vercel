@@ -25,7 +25,11 @@ async function readHistory() {
   for (const chunk of chunks) { buffer.set(chunk, pos); pos += chunk.byteLength; }
   const parsed = parseCsv(new TextDecoder().decode(buffer).replace(/^\uFEFF/, ''));
   if (!parsed.length) throw new Error('El CSV histórico está vacío');
-  return { encabezados: parsed[0].slice(0, 35), filas: parsed.slice(1).filter(r => r.some(v => v.trim())).map(r => r.slice(0, 35)) };
+  const campos = [57, 2, 1, 3, 21, 32, 33, 60, 61, 62, 83, 84, 85, 90];
+  return {
+    encabezados: ['Fecha (BF)', 'Turno (C)', 'Supervisor', 'Novedades molienda y silo', 'Maquinista molienda', 'Producción molienda', 'Pala molienda', 'Producción silo', 'Pala silo', 'Maquinista silo', 'Tiempo de silo', 'Toneladas molidas a silo', 'Cargando en cono', 'Balanza de producción'],
+    filas: parsed.slice(1).filter(r => r.some(v => v.trim())).filter(r => r[57] && r[2]).map(r => campos.map(i => r[i] ?? ''))
+  };
 }
 
 export async function GET(request) {

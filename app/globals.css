@@ -185,6 +185,22 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .mes-weather-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .mes-home-footer { border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 18px; margin-top: 34px; padding-top: 16px; color: var(--muted); font-size: 11px; }
 .mes-home-footer span:first-child { font-weight: 750; letter-spacing: .08em; }
+.mes-page-header { display:flex; justify-content:space-between; align-items:flex-start; gap:18px; flex-wrap:wrap; padding:24px; border:1px solid var(--line, #34464b); border-radius:14px; background:var(--surface, #1a282d); }
+.mes-page-header h2 { margin:3px 0 6px; font-size:clamp(25px,3vw,34px); letter-spacing:-.04em; font-weight:760; }
+.mes-page-header p:last-child { max-width:720px; color:var(--muted, #a9b9bb); font-size:14px; line-height:1.5; }
+.mes-primary-button, .mes-secondary-button { min-height:40px; border-radius:8px; padding:9px 13px; font-size:13px; font-weight:750; transition:transform .18s,filter .18s,border-color .18s; }
+.mes-primary-button { background:#4d9488; color:#071d20; }.mes-secondary-button { border:1px solid var(--line,#44565b); color:var(--ink,#e8eeee); background:transparent; }
+.mes-primary-button:hover, .mes-secondary-button:hover { transform:translateY(-1px); filter:brightness(1.08); border-color:#72a69e; }
+.mes-kpi-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+.mes-data-card { position:relative; overflow:hidden; min-height:125px; padding:17px 18px; border-radius:12px; border:1px solid var(--line,#34464b); background:var(--surface,#1a282d); }
+.mes-data-card::before { content:''; position:absolute; left:0; top:18px; bottom:18px; width:3px; border-radius:0 3px 3px 0; background:#b78654; }
+.mes-data-card:nth-child(2)::before { background:#6da794; }.mes-data-card:nth-child(3)::before { background:#7e9daf; }.mes-data-card:nth-child(4)::before { background:#c59d58; }
+.mes-data-card span, .mes-metric-chip span { display:block; color:var(--muted,#a9b9bb); font-size:12px; font-weight:700; }.mes-data-card strong { display:block; margin:6px 0 4px; font-size:27px; line-height:1.1; letter-spacing:-.035em; font-variant-numeric:tabular-nums; }.mes-data-card small,.mes-metric-chip small{font-size:13px;color:var(--muted,#a9b9bb);font-weight:600}.mes-data-card em,.mes-metric-chip em { color:var(--muted,#a9b9bb); font-size:11px; font-style:normal; }
+.mes-section-kicker { color:#81bdb8; font-size:10px; letter-spacing:.12em; font-weight:800; }.mes-data-source { align-self:flex-start; color:#81bdb8; border:1px solid #42726c; background:#1d51471f; border-radius:99px; padding:5px 9px; font-size:11px; font-weight:700; }
+.mes-metric-chip { border:1px solid var(--line,#34464b); border-radius:10px; padding:13px; background:color-mix(in srgb, var(--surface-raised,#223239) 82%, transparent); }.mes-metric-chip strong { display:block; margin:5px 0 3px; font-size:21px; color:#8dcfc4; font-variant-numeric:tabular-nums; }
+.mes-progress { height:7px; overflow:hidden; margin-top:7px; border-radius:99px; background:#304248; }.mes-progress i { display:block; height:100%; border-radius:inherit; background:linear-gradient(90deg,#4b837c,#8fc8b9); }
+.mes-bar-card { border:1px solid var(--line,#34464b); border-radius:10px; padding:12px; background:var(--surface-raised,#223239); }.mes-bar-card i { width:100%; display:block; border-radius:6px 6px 2px 2px; background:linear-gradient(180deg,#8fc8b9,#3f7d75); }.mes-bar-card strong { display:block; margin-top:8px; font-size:15px; }.mes-bar-card span { display:block; color:var(--muted,#a9b9bb); font-size:11px; margin-top:2px; }.mes-inline-status { border:1px solid #9f7842; background:#9f78421c; color:#d9b77d; border-radius:10px; padding:11px 13px; font-size:13px; }
+.mes-light .mes-primary-button { background:#2d726a; color:#fff; }.mes-light .mes-data-source,.mes-light .mes-section-kicker { color:#1d665f; }.mes-light .mes-metric-chip strong { color:#17665e; }.mes-light .mes-progress { background:#dce8e5; }.mes-light .mes-data-card,.mes-light .mes-page-header { box-shadow:0 2px 10px rgba(24,50,50,.045); }
 @media (max-width: 1000px) { .mes-home-columns { grid-template-columns: 1fr; } .mes-home-aside { grid-template-columns: repeat(2,minmax(0,1fr)); padding-top: 0; } .mes-aside-card:first-child { grid-row: span 2; } }
 @media (max-width: 720px) {
   .mes-home-wrap { padding: 16px 16px 32px; }

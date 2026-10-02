@@ -1,5 +1,14 @@
 # Actualización operativa — 2 de octubre de 2026
 
+## Interfaz e histórico productivo
+
+- El panel de **Indicadores** diferencia inventario actual, cierres auditados e histórico productivo. Incluye producción promedio de molienda y silo, toneladas molidas a silo, distribución por turno y trazabilidad por supervisor.
+- El histórico usa el CSV publicado como respaldo de lectura si Apps Script no responde. Solo permite consulta; no altera registros productivos.
+- Se muestran los campos operativos relevantes: fecha, turno, supervisor, novedades de molienda/silo, equipo, producción, tiempo de silo, toneladas a silo, cono cargado y balanza de producción.
+- Se reforzaron contrastes claro/oscuro, jerarquía visual, tarjetas, barras y acciones principales con una paleta sobria de tierra, acero y verde operacional.
+- La configuración se nombra por función: personal, equipos, orígenes, rutas, calidad, plano, comunicaciones, informes y sistema/seguridad.
+- Los avisos técnicos de migración y conciliación ya no ocupan la portada; se muestran en el módulo que permite resolverlos.
+
 ## Qué corrige
 
 - Auditoría disponible para cualquier jornada del plan hasta el día actual, incluso desde el acceso directo `Auditoría`.
