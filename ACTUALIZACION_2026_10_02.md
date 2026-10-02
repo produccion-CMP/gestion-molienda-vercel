@@ -9,6 +9,15 @@
 - La configuración se nombra por función: personal, equipos, orígenes, rutas, calidad, plano, comunicaciones, informes y sistema/seguridad.
 - Los avisos técnicos de migración y conciliación ya no ocupan la portada; se muestran en el módulo que permite resolverlos.
 
+## Sincronización cooperativa obligatoria
+
+- Google Sheets pasa a ser la fuente compartida para el estado operativo. La aplicación consulta el estado al abrir, cada 30 segundos, al volver a la pestaña y al recuperar conexión.
+- La planificación se actualiza por número de revisión. Una versión guardada por otro dispositivo reemplaza la copia local cuando es más nueva; un borrador sin publicar del usuario actual no se sobrescribe silenciosamente.
+- Los recordatorios se cargan de forma autoritativa desde la planilla para que altas, cambios de estado y finalizaciones sean iguales en todos los equipos.
+- Los últimos cierres confirmados devuelven sus datos operativos, balance de conos e inventario posterior. Así cualquier usuario puede abrir indicadores, balances e informes de cierres realizados por otra persona.
+
+Después de publicar esta versión es obligatorio reemplazar `integrations/Code.gs`, crear una nueva implementación de Apps Script y reemplazar `App.jsx` en GitHub. Si no se actualiza Apps Script, la aplicación anterior seguirá devolviendo solo resúmenes y no podrá compartir los cierres completos.
+
 ## Qué corrige
 
 - Auditoría disponible para cualquier jornada del plan hasta el día actual, incluso desde el acceso directo `Auditoría`.

@@ -401,10 +401,23 @@ function mesState() {
   const book = SpreadsheetApp.openById(MES_PRIMARY_ID);
   const stock = mesStock(book);
   const audit = mesTab(book, 'MES_Auditorias', MES_AUDIT_HEADER, false);
-  const reports = audit && audit.getLastRow() > 1
-    ? audit.getRange(Math.max(2, audit.getLastRow() - 29), 1, Math.min(30, audit.getLastRow() - 1), 6)
-      .getValues().map(row => ({ id: String(row[0]), fecha: String(row[1]), revision: Number(row[2]) }))
+  const auditRows = audit && audit.getLastRow() > 1
+    ? audit.getRange(Math.max(2, audit.getLastRow() - 19), 1, Math.min(20, audit.getLastRow() - 1), 6).getValues()
     : [];
+  const auditorias = auditRows.map(row => {
+    let data = {}, stockFinal = {};
+    try { data = JSON.parse(String(row[3] || '{}')); } catch (_) {}
+    try { stockFinal = JSON.parse(String(row[4] || '{}')); } catch (_) {}
+    const turno = Array.isArray(data.Turnos) ? data.Turnos[0] || {} : {};
+    return { id: String(row[0]), fecha: String(row[1] || turno.fecha || ''), revision: Number(row[2]) || 0,
+      payload: data, stockPostCierre: stockFinal,
+      totalToneladasIngresadas: Number(turno.totalToneladasIngreso) || 0,
+      totalM3Movidos: Number(turno.totalM3Movidos) || 0,
+      totalPaladas: Number(turno.totalPaladas) || 0,
+      totalMinutosParada: Number(turno.totalMinutosParada) || 0,
+      cumplimientoTareasPct: 0, sincronizacion: 'confirmada',
+      balanceSilos: Array.isArray(data.BalanceSilos) ? data.BalanceSilos : [] };
+  }).reverse();
   const turnos = book.getSheetByName('Turnos');
   const ajustes = mesTab(book, 'MES_Ajustes', MES_ADJUST_HEADER, false);
   const ajustesRecientes = ajustes && ajustes.getLastRow() > 1 && ajustes.getLastColumn() >= 10
@@ -415,7 +428,7 @@ function mesState() {
         antesTon: Number(r[7]), diferenciaTon: Number(r[8]),
         responsable: r[9] })).reverse() : [];
   return { ok: true, revision: mesRevision(book), etag: mesDigest(stock), stock,
-    catalogos: mesCatalogos(book), reports, ajustesRecientes, planificacion: mesReadPlan(book),
+    catalogos: mesCatalogos(book), reports: auditorias.map(r => ({ id: r.id, fecha: r.fecha, revision: r.revision })), auditorias, ajustesRecientes, planificacion: mesReadPlan(book),
     destinatarios: mesRecipients(book), informes: mesReportRows(book).slice(-30).map(r => ({ id: String(r[0]), fecha: String(r[1] || ''), url: String(r[3]),
       enviadoA: String(r[5] || ''), estadoEnvio: String(r[7] || '') })),
     telegramDestinatarios: mesTelegramRecipients(book), recordatorios: mesReminders(book).slice(-200),

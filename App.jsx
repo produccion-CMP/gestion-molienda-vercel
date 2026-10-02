@@ -569,6 +569,8 @@ const App = () => {
   const [camionMapaId, setCamionMapaId] = useState(null);
   const [traspasoCono, setTraspasoCono] = useState({ origenId: '', destinoId: '' });
   const closingRef = useRef(false);
+  const sincronizandoEstadoRef = useRef(false);
+  const planCompartidoRef = useRef({ revision: 0, snapshot: '' });
   const inicioEdicionStockRef = useRef(null);
   const dataRef = useRef({ stockPlaya, stockSilos, stockCajon2 });
   dataRef.current = { stockPlaya, stockSilos, stockCajon2 };
@@ -747,7 +749,15 @@ const App = () => {
 
   useEffect(() => {
     if (!hydrated || !appsScriptUrl || appsScriptUrl === 'URL_AQUI') return;
-    cargarEstadoSheet();
+    const sincronizar = () => {
+      if (document.visibilityState === 'hidden') return;
+      cargarEstadoSheet();
+    };
+    sincronizar();
+    const timer = setInterval(sincronizar, 30000);
+    window.addEventListener('focus', sincronizar);
+    window.addEventListener('online', sincronizar);
+    return () => { clearInterval(timer); window.removeEventListener('focus', sincronizar); window.removeEventListener('online', sincronizar); };
   }, [hydrated, appsScriptUrl]);
 
   const consultarAppsScript = async (action, extra = {}) => {
@@ -763,6 +773,8 @@ const App = () => {
 
   const cargarEstadoSheet = async () => {
     if (!appsScriptUrl || appsScriptUrl === 'URL_AQUI') return;
+    if (sincronizandoEstadoRef.current) return;
+    sincronizandoEstadoRef.current = true;
     try {
       const remoto = await consultarAppsScript('state');
       if (remoto.catalogos) {
@@ -780,24 +792,34 @@ const App = () => {
       setStockValidadoSheet(remoto.stock ?? null);
       if (Array.isArray(remoto.destinatarios)) setDestinatariosInforme(remoto.destinatarios);
       if (Array.isArray(remoto.telegramDestinatarios)) setDestinatariosTelegram(remoto.telegramDestinatarios);
-      if (Array.isArray(remoto.recordatorios)) setRecordatorios(prev => {
-        const map = new Map(prev.map(r => [String(r.id), r]));
-        remoto.recordatorios.forEach(r => map.set(String(r.id), { ...map.get(String(r.id)), ...r, sincronizado: true }));
-        return [...map.values()];
-      });
+      if (Array.isArray(remoto.recordatorios)) setRecordatorios(remoto.recordatorios.map(r => ({ ...r, sincronizado: true })));
       if (Array.isArray(remoto.informes)) {
         const byId = new Map(remoto.informes.map(x => [x.id, x]));
         setHistorialReportes(prev => [...prev.map(x => byId.has(String(x.id)) ? { ...x, informe: byId.get(String(x.id)) } : x),
           ...remoto.informes.filter(x => !prev.some(y => String(y.id) === String(x.id))).map(x => ({ id: x.id, fecha: x.fecha || '', informe: x, sincronizacion: 'Google Sheets' }))]);
       }
       if (remoto.planificacion?.plan) {
-        setPlan(prev => prev.activa && prev.idPlan && prev.idPlan === remoto.planificacion.idPlan ? prev : ({ ...prev, ...remoto.planificacion.plan, activa: true, idPlan: remoto.planificacion.idPlan }));
-        setRevisionPlan(Number(remoto.planificacion.revision) || 0);
+        const revisionRemota = Number(remoto.planificacion.revision) || 0;
+        const planRemoto = { ...remoto.planificacion.plan, activa: true, idPlan: remoto.planificacion.idPlan };
+        const snapshotRemoto = JSON.stringify(planRemoto);
+        setPlan(prev => {
+          const borradorLocal = JSON.stringify(prev) !== planCompartidoRef.current.snapshot;
+          if (revisionRemota > planCompartidoRef.current.revision || !prev.idPlan || !borradorLocal) {
+            planCompartidoRef.current = { revision: revisionRemota, snapshot: snapshotRemoto };
+            return planRemoto;
+          }
+          return prev;
+        });
+        setRevisionPlan(revisionRemota);
       }
       if (remoto.ajustesRecientes?.length) setAjustesManuales(prev => {
         const ids = new Set(prev.map(a => a.id));
         return [...remoto.ajustesRecientes.filter(a => !ids.has(a.idAjuste)).map(a => ({ ...a,
           id: a.idAjuste, origen: 'Google Sheets' })), ...prev];
+      });
+      if (Array.isArray(remoto.auditorias)) setHistorialReportes(prev => {
+        const pendientesLocales = prev.filter(r => r.sincronizacion === 'pendiente' && !remoto.auditorias.some(a => String(a.id) === String(r.id)));
+        return [...pendientesLocales, ...remoto.auditorias];
       });
       const idsRemotos = new Set(remoto.reports?.map(r => String(r.id)) ?? []);
       const sinEnviar = historialReportes.filter(r => r.sincronizacion === 'pendiente' && !idsRemotos.has(String(r.id)));
@@ -838,6 +860,7 @@ const App = () => {
         setDatosEjemplo(false);
       }
     } catch (error) { setEstadoSheet(prev => ({ ...prev, estado: 'error', mensaje: error.message })); }
+    finally { sincronizandoEstadoRef.current = false; }
   };
 
   useEffect(() => {
@@ -1057,8 +1080,10 @@ const App = () => {
     const planARegistrar = { ...plan, activa: true };
     const result = await consultarAppsScript('savePlan', { payload: { action: 'savePlan', expectedRevision: revisionPlan, plan: planARegistrar } });
     const remoto = result.planificacion;
-    setPlan({ ...remoto.plan, activa: true });
-    setRevisionPlan(remoto.revision);
+    const planPublicado = { ...remoto.plan, activa: true, idPlan: remoto.idPlan ?? remoto.plan?.idPlan };
+    planCompartidoRef.current = { revision: Number(remoto.revision) || 0, snapshot: JSON.stringify(planPublicado) };
+    setPlan(planPublicado);
+    setRevisionPlan(Number(remoto.revision) || 0);
     materializarAcopiosPlanificados();
     showToast('Planificación guardada en Google Sheets y publicada para el equipo.');
   };
