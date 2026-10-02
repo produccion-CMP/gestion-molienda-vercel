@@ -22,6 +22,13 @@ const fechaLocal = () => {
   const valor = tipo => partes.find(parte => parte.type === tipo).value;
   return `${valor('year')}-${valor('month')}-${valor('day')}`;
 };
+const fechaCorta = value => {
+  const texto = String(value ?? '');
+  if (!texto) return 'Sin fecha';
+  const fecha = /^\d{4}-\d{2}-\d{2}$/.test(texto) ? new Date(`${texto}T12:00:00`) : new Date(texto);
+  return Number.isNaN(fecha.getTime()) ? texto : fecha.toLocaleDateString('es-AR', { day: '2-digit', month: 'short', year: 'numeric' });
+};
+const horaCorta = value => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value ?? '')) ? String(value) : '';
 const nuevoId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 const numero = (valor) => Number.isFinite(Number(valor)) ? Number(valor) : 0;
 const redondear = (valor) => Math.round((valor + Number.EPSILON) * 100) / 100;
@@ -145,6 +152,12 @@ function calcularBalanceJornada({ playa, silos, cajon2, ingresos, movimientos, t
       destinoSilo.paladasOperativas = numero(destinoSilo.paladasOperativas) + paladas;
       destinoSilo.humedadNivel = nivelHumedad((nivelHumedad(destinoSilo.humedadNivel ?? 1) * previo +
         nivelHumedad(humedad) * toneladas) / (previo + toneladas));
+      const calidadOrigen = origenPlaya?.calidades ?? origenSilo?.calidades ?? {};
+      const calidadAnterior = destinoSilo.calidades ?? {};
+      const camposCalidad = new Set([...Object.keys(calidadAnterior), ...Object.keys(calidadOrigen), 'Humedad']);
+      destinoSilo.calidades = Object.fromEntries([...camposCalidad].filter(c => Number.isFinite(numero(calidadOrigen[c])) || Number.isFinite(numero(calidadAnterior[c])))
+        .map(c => [c, redondear((numero(calidadAnterior[c]) * previo + numero(calidadOrigen[c]) * toneladas) / Math.max(.01, previo + toneladas))]));
+      destinoSilo.calidades.Humedad = destinoSilo.humedadNivel;
     }
     else if (esCajon2(mov.destino)) saldoCajon2 += toneladas;
     else if (esCajon1(mov.destino) || esCajon3(mov.destino)) consumo += toneladas;
@@ -166,6 +179,9 @@ function calcularBalanceJornada({ playa, silos, cajon2, ingresos, movimientos, t
     destino.paladasOperativas = numero(destino.paladasOperativas) + paladas;
     destino.humedadNivel = nivelHumedad((nivelHumedad(destino.humedadNivel ?? 1) * previo +
       nivelHumedad(origen.humedadNivel ?? 1) * toneladas) / Math.max(.01, previo + toneladas));
+    const camposCalidad = new Set([...Object.keys(destino.calidades ?? {}), ...Object.keys(origen.calidades ?? {}), 'Humedad']);
+    destino.calidades = Object.fromEntries([...camposCalidad].map(c => [c, redondear((numero(destino.calidades?.[c]) * previo + numero(origen.calidades?.[c]) * toneladas) / Math.max(.01, previo + toneladas))]));
+    destino.calidades.Humedad = destino.humedadNivel;
     origen.toneladas = 0;
     origen.paladasOperativas = 0;
     traza.push({ id: transferencia.id, tipo: 'traspaso', origen: origen.nombre, destino: destino.nombre,
@@ -422,6 +438,7 @@ const App = () => {
   const [appsScriptUrl, setAppsScriptUrl] = useState(APPS_SCRIPT_URL);
   const [estadoSheet, setEstadoSheet] = useState({ estado: 'sin_conectar', etag: null, revision: null, aplicado: false });
   const [historicoSheet, setHistoricoSheet] = useState(null);
+  const [registroHistoricoSeleccionado, setRegistroHistoricoSeleccionado] = useState(null);
   const [historicoOffset, setHistoricoOffset] = useState(0);
   const [cargandoHistorico, setCargandoHistorico] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -799,9 +816,9 @@ const App = () => {
             calidades: {}, textura: { arcilla: 0, arena: 0, limo: 0 }, activo: r.activo ?? true }))];
         });
         setStockSilos(prev => [...prev.map(s => { const r = remoto.stock.conos.find(x => clave(x.nombre) === clave(s.nombre) || String(x.id) === String(s.id));
-          return r ? { ...s, toneladas: numero(r.toneladas), humedadNivel: nivelHumedad(r.humedadNivel), paladasOperativas: numero(r.paladasOperativas) } : s; }),
+          return r ? { ...s, toneladas: numero(r.toneladas), humedadNivel: nivelHumedad(r.humedadNivel), paladasOperativas: numero(r.paladasOperativas), calidades: r.calidades ?? s.calidades ?? {} } : s; }),
           ...remoto.stock.conos.filter(r => !prev.some(s => clave(s.nombre) === clave(r.nombre) || String(s.id) === String(r.id)))
-            .map(r => ({ enPlano: !sharedDefinitionRef.current, id: r.id, nombre: r.nombre, toneladas: numero(r.toneladas), humedadNivel: nivelHumedad(r.humedadNivel), paladasOperativas: numero(r.paladasOperativas), activo: true }))]);
+            .map(r => ({ enPlano: !sharedDefinitionRef.current, id: r.id, nombre: r.nombre, toneladas: numero(r.toneladas), humedadNivel: nivelHumedad(r.humedadNivel), paladasOperativas: numero(r.paladasOperativas), calidades: r.calidades ?? {}, activo: true }))]);
         if (!sharedDefinitionRef.current) setPosicionConos(prev => {
           const nuevos = remoto.stock.conos.filter(r => !prev[r.id]);
           return Object.fromEntries([...Object.entries(prev), ...nuevos.map((r, i) =>
@@ -841,9 +858,8 @@ const App = () => {
     const dates = [];
     const curr = new Date(plan.fechaInicio + 'T00:00:00');
     const end = new Date(plan.fechaFin + 'T00:00:00');
-    const yesterday = new Date(fechaLocal() + 'T00:00:00');
-    yesterday.setDate(yesterday.getDate() - 1);
-    const limite = yesterday < end ? yesterday : end;
+    const hoy = new Date(fechaLocal() + 'T00:00:00');
+    const limite = hoy < end ? hoy : end;
 
     while (curr <= limite && dates.length < 366) {
       dates.push(`${curr.getFullYear()}-${String(curr.getMonth() + 1).padStart(2, '0')}-${String(curr.getDate()).padStart(2, '0')}`);
@@ -1560,7 +1576,7 @@ const App = () => {
       stockPostCierre: { acopios: nuevosAcopios.map(a => ({ id: a.id, nombre: a.nombre,
         toneladas: a.toneladas, humedadNivel: nivelHumedad(a.calidades?.Humedad ?? 1) })),
         conos: nuevosSilos.map(s => ({ id: s.id, nombre: s.nombre, toneladas: s.toneladas,
-          humedadNivel: nivelHumedad(s.humedadNivel ?? 1), paladasOperativas: numero(s.paladasOperativas) })), cajon2: balance.cajon2 },
+          humedadNivel: nivelHumedad(s.humedadNivel ?? 1), paladasOperativas: numero(s.paladasOperativas), calidades: s.calidades ?? {} })), cajon2: balance.cajon2 },
       stockPreCierre: { acopios: stockPlaya.map(a => ({ id: a.id, nombre: a.nombre, toneladas: a.toneladas })),
         conos: stockSilos.map(s => ({ id: s.id, nombre: s.nombre, toneladas: s.toneladas })), cajon2: stockCajon2 },
       sincronizacion: 'pendiente',
@@ -1648,8 +1664,10 @@ const App = () => {
     const conosActivos = stockSilos.filter(s => s.activo !== false).length;
     const nav = [
       { nombre: 'Planificación', icono: <Icons.Calendar />, accion: () => { setCurrentView('planning'); setCurrentStep(1); } },
+      { nombre: 'Auditoría', icono: <Icons.Check />, accion: () => { const dias = getDiasVencidos(); if (dias.length) iniciarControl(dias[0]); else showToast('No hay jornadas del período pendientes de auditoría.'); } },
       { nombre: 'Plano de playa', icono: <Icons.Map />, accion: () => setCurrentView('planoPlaya') },
       { nombre: 'Balance de silos', icono: <Icons.Database />, accion: () => setCurrentView('balanceSilos') },
+      { nombre: 'Indicadores', icono: <Icons.Database />, accion: () => setCurrentView('indicadores') },
       { nombre: 'Conciliación', icono: <Icons.Database />, accion: () => setCurrentView('conciliacion') },
       { nombre: 'Datos validados', icono: <Icons.Factory />, accion: () => setCurrentView('datosValidados') },
       { nombre: 'Clima', icono: <Icons.Sun />, accion: () => setCurrentView('clima') },
@@ -2948,7 +2966,7 @@ const App = () => {
           <div className="overflow-auto max-h-[65vh] rounded-xl border border-slate-700">
             <table className="min-w-full text-sm border-collapse"><thead className="sticky top-0 bg-slate-800 text-cyan-200"><tr>
               {(historicoSheet?.encabezados ?? []).map((h, i) => <th key={i} className="p-2 text-left whitespace-nowrap border-b border-slate-600">{h || `Columna ${i + 1}`}</th>)}</tr></thead>
-              <tbody>{(historicoSheet?.filas ?? []).map((row, i) => <tr key={i} className="border-b border-slate-800 hover:bg-slate-800/50">
+              <tbody>{(historicoSheet?.filas ?? []).map((row, i) => <tr key={i} onClick={() => setRegistroHistoricoSeleccionado(row)} className="border-b border-slate-800 hover:bg-cyan-500/10 cursor-pointer">
                 {row.map((v, j) => <td key={j} className="p-2 max-w-80 truncate" title={String(v)}>{String(v)}</td>)}</tr>)}</tbody></table>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
@@ -2964,6 +2982,13 @@ const App = () => {
           </div>
           <p className="text-xs text-slate-500">Solo lectura; los encabezados se muestran tal como están en la hoja original.</p>
         </section>
+      {registroHistoricoSeleccionado && <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm flex items-center justify-center p-4" role="dialog" aria-modal="true">
+        <section className={`${themeClasses.card} max-w-3xl w-full max-h-[85vh] overflow-auto rounded-3xl border p-6 space-y-4`}>
+          <div className="flex justify-between gap-3"><div><p className="text-xs font-bold text-cyan-300 uppercase">Detalle de registro histórico</p><h3 className="text-xl font-black">{fechaCorta(registroHistoricoSeleccionado[0])} · {registroHistoricoSeleccionado[1]}</h3></div>
+            <button type="button" onClick={() => setRegistroHistoricoSeleccionado(null)} className="rounded-lg border border-slate-600 px-3 py-1">Cerrar</button></div>
+          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3">{(historicoSheet?.encabezados ?? []).map((titulo, i) => <div key={titulo} className="rounded-xl border border-slate-700/70 p-3"><dt className="text-xs text-slate-400">{titulo}</dt><dd className="mt-1 text-sm whitespace-pre-wrap">{registroHistoricoSeleccionado[i] || '—'}</dd></div>)}</dl>
+        </section>
+      </div>}
     </div>
   </div>;
 
@@ -3029,6 +3054,9 @@ const App = () => {
     const mayor = Math.max(1, ...serie.map(x => x.toneladas));
     const puntos = serie.map((x, i) => `${30 + i * (580 / Math.max(1, serie.length - 1))},${155 - x.toneladas / mayor * 125}`).join(' ');
     const movimientos = historialReportes.flatMap(r => (r.payload?.Movimientos ?? []).map(m => ({ ...m, fecha: r.fecha }))).slice(0, 12);
+    const movimientosAuditados = historialReportes.flatMap(r => (r.payload?.Movimientos ?? []).map(m => ({ ...m, fecha: r.fecha })));
+    const ingresoSilo = redondear(movimientosAuditados.filter(m => stockSilos.some(s => clave(s.nombre) === clave(m.destino)) || esCajon2(m.destino)).reduce((n, m) => n + numero(m.toneladasEstimadas ?? m.toneladas), 0));
+    const consumoSilo = redondear(movimientosAuditados.filter(m => stockSilos.some(s => clave(s.nombre) === clave(m.origen)) && (esCajon1(m.destino) || esCajon3(m.destino))).reduce((n, m) => n + numero(m.toneladasEstimadas ?? m.toneladas), 0));
     return <div className={`min-h-screen ${themeClasses.bg} p-4 md:p-8`}>
       <div className="max-w-6xl mx-auto space-y-6">
         <header className={`${themeClasses.card} border rounded-3xl p-6 flex flex-wrap justify-between gap-3`}>
@@ -3037,9 +3065,9 @@ const App = () => {
             <p className="text-sm text-slate-400">Entradas y salidas de los movimientos auditados, con actualización al cerrar cada jornada.</p></div>
           <button onClick={() => setCurrentView('dashboard')} className="rounded-xl bg-slate-800 text-white px-4 py-2 h-fit">Volver al panel</button>
         </header>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {[['Conos disponibles', conosValidados ? total : '—', conosValidados ? 't' : ''], ['Cajón 2 · por distribuir', redondear(stockCajon2), 't'],
-            ['Conos activos', stockSilos.filter(s => s.activo).length, '']].map(([etiqueta, valor, unidad]) =>
+            ['Ingresos a silo', ingresoSilo, 't'], ['Consumo a producción', consumoSilo, 't']].map(([etiqueta, valor, unidad]) =>
             <div key={etiqueta} className={`${themeClasses.card} border rounded-2xl p-5`}><p className="text-sm text-slate-400">{etiqueta}</p>
               <strong className="text-3xl text-cyan-300">{valor} {unidad}</strong></div>)}
         </div>
@@ -3057,7 +3085,7 @@ const App = () => {
             className="px-4 py-2 rounded-lg bg-amber-400 text-slate-950 font-bold disabled:opacity-40">Confirmar saldos medidos en Google Sheets</button>
           {(!appsScriptUrl || appsScriptUrl === 'URL_AQUI') && <p>Para confirmar, desplegá el puente Apps Script y pegá su URL en Configuración.</p>}
         </div>}
-        <p className="p-3 rounded-xl border border-cyan-500/30 bg-cyan-500/10 text-sm">El consumo de producción se descuenta cuando se audita un movimiento de un cono a Cajón 3. La planilla histórica puede consultarse por separado; todavía no se asignan automáticamente sus toneladas a conos porque no se pudo verificar la estructura de esas pestañas.</p>
+        <p className="p-3 rounded-xl border border-cyan-500/30 bg-cyan-500/10 text-sm">Balance auditado: <strong>{ingresoSilo} t</strong> ingresadas a silo o Cajón 2 − <strong>{consumoSilo} t</strong> consumidas hacia Cajón 1/Cajón 3. El saldo disponible se muestra por cono y no se descuenta desde datos no auditados.</p>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           <section className={`${themeClasses.card} border rounded-3xl p-6 space-y-5`}>
             <h3 className="text-xl font-black">Existencia por cono</h3>
@@ -3068,7 +3096,7 @@ const App = () => {
                 <div className="flex justify-between text-sm"><strong>{s.nombre}{!s.activo ? ' · inactivo' : ''}</strong><strong>{conosValidados ? `${redondear(s.toneladas)} t` : 'Sin validar'}</strong></div>
                 <div className="h-3 bg-slate-700 rounded-full overflow-hidden" role="img" aria-label={`${s.nombre}: ${redondear(s.toneladas)} toneladas`}>
                   <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-violet-500" style={{ width: `${Math.max(0, numero(s.toneladas) / max * 100)}%` }} /></div>
-                <p className="text-xs text-slate-400">Últimos {cierres.length} cierres: +{entradas7} t · −{salidas7} t{ultimo ? ` · último cierre ${ultimo.antesTon} → ${ultimo.finalTon} t` : ''}</p>
+                <p className="text-xs text-slate-400">Humedad H{nivelHumedad(s.calidades?.Humedad ?? s.humedadNivel)} · Paladas: {numero(s.paladasOperativas)}{Object.keys(s.calidades ?? {}).filter(k => k !== 'Humedad').length ? ` · Calidad: ${Object.entries(s.calidades).filter(([k]) => k !== 'Humedad').map(([k,v]) => `${k} ${redondear(v)}`).join(' · ')}` : ''} · Últimos {cierres.length} cierres: +{entradas7} t · −{salidas7} t{ultimo ? ` · último cierre ${ultimo.antesTon} → ${ultimo.finalTon} t` : ''}</p>
               </div>;
             })}
           </section>
@@ -3094,6 +3122,21 @@ const App = () => {
         </section>
       </div>
     </div>;
+  };
+
+  const renderIndicadores = () => {
+    const cierres = [...historialReportes].filter(r => r.fecha).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))).slice(-14);
+    const playa = redondear(stockPlaya.filter(a => a.activo !== false).reduce((n, a) => n + numero(a.toneladas), 0));
+    const silo = redondear(stockSilos.filter(s => s.activo !== false).reduce((n, s) => n + numero(s.toneladas), 0));
+    const ingresos = redondear(cierres.reduce((n, r) => n + numero(r.totalToneladasIngresadas), 0));
+    const consumo = redondear(cierres.reduce((n, r) => n + numero(r.consumoProduccionTon), 0));
+    const max = Math.max(1, ...cierres.map(r => numero(r.totalToneladasIngresadas)));
+    return <main className={`min-h-screen ${themeClasses.bg} p-4 md:p-8`}><div className="max-w-6xl mx-auto space-y-6">
+      <header className={`${themeClasses.card} border rounded-3xl p-6 flex justify-between gap-3 flex-wrap`}><div><p className="text-xs uppercase font-bold tracking-wider text-cyan-300">Decisiones de operación</p><h2 className="text-3xl font-black">Indicadores y tendencias</h2><p className="text-sm text-slate-400">Solo usa cierres de auditoría e inventario validado; no estima producción no registrada.</p></div><button onClick={() => setCurrentView('dashboard')} className="rounded-xl bg-slate-800 px-4 py-2 text-white">Volver</button></header>
+      <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">{[['Stock playa',playa,'t'],['Stock silo',silo,'t'],['Ingresos auditados',ingresos,'t'],['Consumo auditado',consumo,'t']].map(([nombre,valor,unidad]) => <article key={nombre} className={`${themeClasses.card} border rounded-2xl p-5`}><p className="text-sm text-slate-400">{nombre}</p><strong className="text-3xl text-cyan-300">{valor} <small>{unidad}</small></strong></article>)}</section>
+      <section className={`${themeClasses.card} border rounded-3xl p-6`}><div className="flex justify-between gap-3 flex-wrap"><div><h3 className="text-xl font-black">Recepción por jornada</h3><p className="text-sm text-slate-400">Últimos {cierres.length} cierres.</p></div><span className="text-sm text-slate-400">Cobertura: {cierres.length ? `${cierres[0].fecha} a ${cierres[cierres.length - 1].fecha}` : 'sin cierres'}</span></div>
+        {cierres.length ? <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">{cierres.map(r => <div key={r.id} className="rounded-xl bg-slate-800/70 p-3"><div className="h-24 flex items-end"><i className="w-full rounded-t bg-gradient-to-t from-cyan-700 to-cyan-300" style={{height:`${Math.max(4,numero(r.totalToneladasIngresadas)/max*100)}%`}} /></div><strong className="block mt-2">{redondear(r.totalToneladasIngresadas)} t</strong><span className="text-xs text-slate-400">{fechaCorta(r.fecha)}</span></div>)}</div> : <p className="mt-5 text-sm text-slate-400">Aparecerán tendencias después de cerrar auditorías.</p>}</section>
+    </div></main>;
   };
 
   const renderAsistente = () => <div className={`min-h-screen ${themeClasses.bg} p-4 md:p-8`}><div className="max-w-4xl mx-auto space-y-5">
@@ -3214,7 +3257,7 @@ const App = () => {
         <div className="grid grid-cols-7 gap-1 text-center text-xs text-slate-400">{['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'].map(d => <span key={d}>{d}</span>)}</div>
         <div className="grid grid-cols-7 gap-1 mt-2">{diasCalendario.map(d => { const avisos = recordatorios.filter(r => (r.fechaAviso || r.fecha) === d);
           return <button key={d} onClick={() => setFechaPizarron(d)} className={`min-h-16 rounded-lg border p-1 text-left text-xs ${d === fechaPizarron ? 'border-cyan-400' : 'border-slate-700'} ${d.slice(0,7) !== mes ? 'opacity-45' : ''}`}>
-            <span>{Number(d.slice(8))}</span>{avisos.length > 0 && <span className="block mt-1 text-cyan-300">{avisos.length} aviso{avisos.length === 1 ? '' : 's'}</span>}</button>; })}</div>
+            <span className="font-bold">{Number(d.slice(8))}</span>{avisos.length > 0 && <span className="inline-flex mt-1 rounded-full bg-cyan-500/20 px-1.5 py-0.5 text-cyan-200 font-bold">{avisos.length} tarea{avisos.length === 1 ? '' : 's'}</span>}</button>; })}</div>
         <h3 className="mt-4 font-bold">{new Date(`${fechaPizarron}T12:00:00`).toLocaleDateString('es-AR', { dateStyle: 'full' })}</h3>
         <ul className="text-sm mt-2 space-y-1">{recordatorios.filter(r => (r.fechaAviso || r.fecha) === fechaPizarron).map(r => <li key={r.id}>{r.horaAviso || 'Sin hora'} · {r.texto} {r.completado ? '✓' : ''}</li>)}</ul>
       </section>}
@@ -3222,7 +3265,7 @@ const App = () => {
         <article key={rec.id} className={`${themeClasses.card} p-5 rounded-2xl border space-y-3`}>
           <div className="flex justify-between gap-2"><span className="font-bold text-cyan-400 text-xs uppercase">{rec.prioridad}</span><span className="text-xs text-slate-400">Para: {rec.para}</span></div>
           <p className="text-sm font-medium">{rec.texto}</p>
-          <p className="text-xs text-slate-400">{rec.fechaAviso ? `Programado: ${rec.fechaAviso} ${rec.horaAviso || 'sin hora'}` : `Creado: ${rec.fecha}`} · {rec.sincronizado ? `Sheets / Telegram: ${rec.estadoTelegram || 'sin programación'}` : 'Solo en este navegador'}</p>
+          <p className="text-xs text-slate-400">{rec.fechaAviso ? `Programado: ${fechaCorta(rec.fechaAviso)}${horaCorta(rec.horaAviso) ? ` · ${horaCorta(rec.horaAviso)}` : ''}` : `Creado: ${fechaCorta(rec.fecha)}`} · {rec.sincronizado ? `Sheets / Telegram: ${rec.estadoTelegram || 'sin programación'}` : 'Solo en este navegador'}</p>
           {rec.realizadoEn && <p className="text-xs text-emerald-400">Realizado: {new Date(rec.realizadoEn).toLocaleString('es-AR')}</p>}
           <div className="flex justify-between gap-3 border-t border-slate-700 pt-2"><button className="text-xs font-bold text-cyan-400" onClick={() => marcar(rec)}>{rec.completado ? 'Reabrir tarea' : 'Marcar como realizada'}</button>
             <button aria-label="Eliminar aviso" className="text-xs text-red-400" onClick={() => setRecordatorios(prev => prev.filter(r => r.id !== rec.id))}><Icons.Trash /></button></div>
@@ -5333,7 +5376,7 @@ const App = () => {
           <span className="mes-topbar-mark"><Icons.Factory /></span><strong>GESTIÓN MOLIENDA</strong><span className="mes-topbar-location">/ CEVIL POZO</span>
         </button>
         <div className="mes-topbar-links">
-          {[['dashboard', 'Panel'], ['planning', 'Plan'], ['planoPlaya', 'Plano'], ['balanceSilos', 'Silos'], ['conciliacion', 'Conciliar'], ['datosValidados', 'Datos'], ['clima', 'Clima'], ['historico', 'Histórico'], ['recordatorios', 'Pizarrón'], ['asistente', 'Ayuda']].map(([vista, nombre]) =>
+          {[['dashboard', 'Panel'], ['planning', 'Plan'], ['planoPlaya', 'Plano'], ['balanceSilos', 'Silos'], ['indicadores', 'Indicadores'], ['conciliacion', 'Conciliar'], ['datosValidados', 'Datos'], ['clima', 'Clima'], ['historico', 'Histórico'], ['recordatorios', 'Pizarrón'], ['asistente', 'Ayuda']].map(([vista, nombre]) =>
             <button key={vista} type="button" aria-current={currentView === vista ? 'page' : undefined}
               onClick={() => { setCurrentView(vista); if (vista === 'planning') setCurrentStep(1); }}>{nombre}</button>)}
         </div>
@@ -5353,6 +5396,7 @@ const App = () => {
       {currentView === 'editorPlano' && (configDesbloqueada && mapaDesbloqueado ? renderPlanoPlaya(true) : <div className="p-8"><button className="px-4 py-2 bg-cyan-600 text-white rounded-xl" onClick={() => { setPinDestino('editorPlano'); setModalPinAbierto(true); }}>🔒 Desbloquear editor del plano</button></div>)}
       {currentView === 'clima' && renderClimaView()}
       {currentView === 'balanceSilos' && renderBalanceSilos()}
+      {currentView === 'indicadores' && renderIndicadores()}
       {currentView === 'conciliacion' && renderConciliacion()}
       {currentView === 'datosValidados' && renderDatosValidados()}
       {currentView === 'historico' && renderHistorico()}

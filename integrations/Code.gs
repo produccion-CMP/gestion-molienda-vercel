@@ -7,7 +7,7 @@
 const MES_PRIMARY_ID = '1hiCNaOYxxEYfpkLci6J0wFBxXuhOyShApOIJTMo6k60';
 const MES_HISTORICAL_ID = '1Ul1iGGqWSkANvBHWq7Aw1dWRWJAbB243lzp0-3IrkdU';
 const MES_PRODUCTION_ID = '10DdVI37wr7uigNpGx4PnrOOmhIMROKAxKn6b5cNRlPc';
-const MES_STOCK_HEADER = ['tipo', 'id', 'nombre', 'toneladas', 'humedadNivel', 'actualizado', 'paladasOperativas'];
+const MES_STOCK_HEADER = ['tipo', 'id', 'nombre', 'toneladas', 'humedadNivel', 'actualizado', 'paladasOperativas', 'calidadJSON'];
 const MES_AUDIT_HEADER = ['id', 'fecha', 'revision', 'payloadJSON', 'stockJSON', 'registrado'];
 const MES_ADJUST_HEADER = ['fecha','tipo','id','nombre','toneladas','motivo','idAjuste','antesTon','diferenciaTon','responsable'];
 const MES_REPORT_HEADER = ['idCierre','fecha','archivoId','urlPDF','creado','enviadoA','enviadoEl','estadoEnvio'];
@@ -58,7 +58,7 @@ function crearEstructuraHojas() {
   mesTab(book, 'MES_Planificacion_Detalle', MES_PLAN_DETAIL_HEADER, true);
   mesTab(book, 'MES_Inventario', MES_STOCK_HEADER, true);
   const inventario = book.getSheetByName('MES_Inventario');
-  if (!inventario.getRange(1, 7).getValue()) inventario.getRange(1, 7).setValue('paladasOperativas');
+  MES_STOCK_HEADER.forEach((name, index) => { if (!inventario.getRange(1, index + 1).getValue()) inventario.getRange(1, index + 1).setValue(name); });
   const ajustes = mesTab(book, 'MES_Ajustes', MES_ADJUST_HEADER, true);
   MES_ADJUST_HEADER.forEach((name, i) => { if (!ajustes.getRange(1, i + 1).getValue())
     ajustes.getRange(1, i + 1).setValue(name); });
@@ -70,6 +70,23 @@ function crearEstructuraHojas() {
   mesTab(book, 'MES_Indicaciones', ['fecha','textoOriginal','textoAprobado','categoria','descripcion','sector','turno','validada','ID Cierre','Índice Cierre'], true);
   mesTab(book, 'MES_TransferenciasConos', ['fecha','origen','destino','paladas','toneladas','motivo','idCierre','indiceCierre'], true);
   console.log('Estructura verificada. No se modificaron datos existentes.');
+}
+
+function ocultarHojasTecnicas() {
+  const book = SpreadsheetApp.openById(MES_PRIMARY_ID);
+  ['MES_Plano_Elementos','MES_Planos','MES_Planificacion_Detalle','MES_TelegramEnvios'].forEach(name => {
+    const tab = book.getSheetByName(name); if (tab) tab.hideSheet();
+  });
+  const legacy = book.getSheetByName('Maestros');
+  if (legacy && legacy.getLastRow() === 0) legacy.hideSheet();
+  console.log('Se ocultaron hojas técnicas; no se borraron datos.');
+}
+
+function mostrarHojasTecnicas() {
+  const book = SpreadsheetApp.openById(MES_PRIMARY_ID);
+  ['MES_Plano_Elementos','MES_Planos','MES_Planificacion_Detalle','MES_TelegramEnvios','Maestros'].forEach(name => {
+    const tab = book.getSheetByName(name); if (tab) tab.showSheet();
+  });
 }
 
 function mesJson(data) {
@@ -93,14 +110,14 @@ function mesTab(book, title, header, create) {
 
 function mesStock(book) {
   const tab = mesTab(book, 'MES_Inventario', MES_STOCK_HEADER, false);
-  const rows = tab && tab.getLastRow() > 1 ? tab.getRange(2, 1, tab.getLastRow() - 1, 7).getValues() : [];
+  const rows = tab && tab.getLastRow() > 1 ? tab.getRange(2, 1, tab.getLastRow() - 1, 8).getValues() : [];
   const acopios = [], conos = [];
   let cajon2 = 0;
   rows.forEach(row => {
-    const [tipo, id, nombre, toneladas, humedadNivel, actualizado, paladasOperativas] = row;
+    const [tipo, id, nombre, toneladas, humedadNivel, actualizado, paladasOperativas, calidadJSON] = row;
     if (!nombre || !Number.isFinite(Number(toneladas)) || Number(toneladas) < 0) return;
     const item = { id: String(id), nombre: String(nombre), toneladas: Number(toneladas), humedadNivel: humedadNivel === '' ? 1 : Number(humedadNivel),
-      paladasOperativas: Number(paladasOperativas) || 0 };
+      paladasOperativas: Number(paladasOperativas) || 0, calidades: mesParseQuality(calidadJSON) };
     if (tipo === 'cono') conos.push(item);
     if (tipo === 'cajon2') cajon2 = item.toneladas;
   });
@@ -124,9 +141,22 @@ function mesStock(book) {
       });
     };
     merge(acopios, shared.acopios);
-    merge(conos, shared.conos || []);
+    // El plano vigente define qué conos existen. Los renglones sin ese ID son
+    // residuos de configuraciones anteriores y no deben volver a la aplicación.
+    const byId = new Map(conos.map(x => [String(x.id), x]));
+    const conosVigentes = (shared.conos || []).map(def => {
+      const item = { ...(byId.get(String(def.id)) || { id: String(def.id), toneladas: 0, paladasOperativas: 0, humedadNivel: 1 }) };
+      item.nombre = def.nombre; item.activo = def.activo !== false;
+      return item;
+    });
+    conos.splice(0, conos.length, ...conosVigentes);
   }
   return { acopios, conos, cajon2 };
+}
+
+function mesParseQuality(value) {
+  try { const parsed = JSON.parse(String(value || '{}')); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}; }
+  catch (_) { return {}; }
 }
 
 function mesCatalogo(book, tabName, fields) {
@@ -177,16 +207,16 @@ function mesWriteStock(book, stock, data) {
     else { playa.appendRow(row); byId.set(String(a.id), playa.getLastRow()); }
   });
   const tab = mesTab(book, 'MES_Inventario', MES_STOCK_HEADER, true);
-  if (!tab.getRange(1, 7).getValue()) tab.getRange(1, 7).setValue('paladasOperativas');
+  MES_STOCK_HEADER.forEach((name, index) => { if (!tab.getRange(1, index + 1).getValue()) tab.getRange(1, index + 1).setValue(name); });
   const items = [
-    ...(stock.conos || []).map(s => ['cono', s.id, s.nombre, s.toneladas, s.humedadNivel ?? 1, new Date(), s.paladasOperativas ?? 0]),
-    ['cajon2', 'cajon2', 'Cajón 2', stock.cajon2 || 0, 1, new Date(), 0]
+    ...(stock.conos || []).map(s => ['cono', s.id, s.nombre, s.toneladas, s.humedadNivel ?? 1, new Date(), s.paladasOperativas ?? 0, JSON.stringify(s.calidades || {})]),
+    ['cajon2', 'cajon2', 'Cajón 2', stock.cajon2 || 0, 1, new Date(), 0, '{}']
   ];
   items.forEach(row => {
     if (!row[2] || !Number.isFinite(Number(row[3])) || Number(row[3]) < 0) throw new Error('Inventario inválido');
   });
-  if (tab.getLastRow() > 1) tab.getRange(2, 1, tab.getLastRow() - 1, 7).clearContent();
-  if (items.length) tab.getRange(2, 1, items.length, 7).setValues(items);
+  if (tab.getLastRow() > 1) tab.getRange(2, 1, tab.getLastRow() - 1, 8).clearContent();
+  if (items.length) tab.getRange(2, 1, items.length, 8).setValues(items);
 }
 
 const MES_COLUMNS = {
@@ -312,9 +342,12 @@ function mesTelegramRecipients(book) {
 
 function mesReminders(book) {
   const tab = mesTab(book, 'MES_Recordatorios', MES_REMINDER_HEADER, true);
+  const zone = Session.getScriptTimeZone();
+  const dateOnly = value => value instanceof Date ? Utilities.formatDate(value, zone, 'yyyy-MM-dd') : String(value || '');
+  const timeOnly = value => value instanceof Date ? Utilities.formatDate(value, zone, 'HH:mm') : String(value || '');
   return tab.getLastRow() < 2 ? [] : tab.getRange(2, 1, tab.getLastRow() - 1, 11).getValues()
-    .filter(r => r[0]).map(r => ({ id: String(r[0]), fecha: r[1] instanceof Date ? r[1].toISOString() : String(r[1] || ''), fechaAviso: String(r[2] || ''),
-      horaAviso: String(r[3] || ''), para: String(r[4] || ''), prioridad: String(r[5] || ''),
+    .filter(r => r[0]).map(r => ({ id: String(r[0]), fecha: r[1] instanceof Date ? r[1].toISOString() : String(r[1] || ''), fechaAviso: dateOnly(r[2]),
+      horaAviso: timeOnly(r[3]), para: String(r[4] || ''), prioridad: String(r[5] || ''),
       texto: String(r[6] || ''), completado: r[7] === true, realizadoEn: r[8] instanceof Date ? r[8].toISOString() : String(r[8] || ''),
       estadoTelegram: String(r[9] || ''), notificadoEn: String(r[10] || '') }));
 }
@@ -432,10 +465,10 @@ function mesProductionHistory(e) {
   if (!tab) throw new Error('No se encontró «Respuestas de formulario 1» en Informe de Producción CMP – Planta CEVIL.');
   const last = tab.getLastRow(), offset = Math.max(0, Math.floor(Number(e.parameter.offset) || 0)), size = 100;
   const start = Math.max(2, last - offset - size + 1), count = Math.max(0, last - start + 1);
-  const raw = count ? tab.getRange(start, 1, count, Math.min(65, tab.getLastColumn())).getDisplayValues().reverse() : [];
-  const filas = raw.filter(r => r[57] && r[2]).map(r => [r[57],r[2],r[1],r[3],r[21],r[32],r[33],r[60],r[61],r[62],r[63],r[64]]);
+  const raw = count ? tab.getRange(start, 1, count, Math.min(91, tab.getLastColumn())).getDisplayValues().reverse() : [];
+  const filas = raw.filter(r => r[57] && r[2]).map(r => [r[57],r[2],r[1],r[3],r[21],r[32],r[33],r[60],r[61],r[62],r[83],r[84],r[85],r[90]]);
   return { ok: true, fuente: 'Informe de Producción CMP – Planta CEVIL', hoja: 'Respuestas de formulario 1',
-    encabezados: ['Fecha (BF)','Turno (C)','Supervisor','Novedades molienda y silo','Maquinista molienda','Producción molienda','Pala molienda','Producción silo','Pala silo','Maquinista silo','Novedades generales','Tiempo extrusora'],
+    encabezados: ['Fecha (BF)','Turno (C)','Supervisor','Novedades molienda y silo','Maquinista molienda','Producción molienda','Pala molienda','Producción silo','Pala silo','Maquinista silo','Tiempo de silo','Toneladas molidas a silo','Cargando en cono','Balanza de producción'],
     filas, offset, hayMas: start > 2 };
 }
 
