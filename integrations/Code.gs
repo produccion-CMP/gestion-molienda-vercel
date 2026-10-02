@@ -6,6 +6,7 @@
  */
 const MES_PRIMARY_ID = '1hiCNaOYxxEYfpkLci6J0wFBxXuhOyShApOIJTMo6k60';
 const MES_HISTORICAL_ID = '1Ul1iGGqWSkANvBHWq7Aw1dWRWJAbB243lzp0-3IrkdU';
+const MES_PRODUCTION_ID = '10DdVI37wr7uigNpGx4PnrOOmhIMROKAxKn6b5cNRlPc';
 const MES_STOCK_HEADER = ['tipo', 'id', 'nombre', 'toneladas', 'humedadNivel', 'actualizado', 'paladasOperativas'];
 const MES_AUDIT_HEADER = ['id', 'fecha', 'revision', 'payloadJSON', 'stockJSON', 'registrado'];
 const MES_ADJUST_HEADER = ['fecha','tipo','id','nombre','toneladas','motivo','idAjuste','antesTon','diferenciaTon','responsable'];
@@ -16,6 +17,8 @@ const MES_REMINDER_HEADER = ['id','creado','fechaAviso','horaAviso','para','prio
 const MES_TELEGRAM_LOG_HEADER = ['idAviso','chatId','fecha','estado','detalle','destino'];
 const MES_MAP_CURRENT_HEADER = ['revision','actualizado','origen','planoJSON','resumenJSON'];
 const MES_MAP_ELEMENTS_HEADER = ['revision','actualizado','tipo','id','nombre','estado','sector','forma','x','y','ancho','alto','radio','pisos','propiedadesJSON'];
+const MES_PLAN_HEADER = ['idPlan','revision','estado','fechaInicio','fechaFin','planJSON','creado','actualizado'];
+const MES_PLAN_DETAIL_HEADER = ['idPlan','revision','tipo','idElemento','fechaInicio','fechaFin','turnos','sector','nombre','detalleJSON','actualizado'];
 
 // Conserva el menú del proyecto original. Sólo prepara encabezados faltantes:
 // no sobrescribe catálogos, existencias ni registros históricos.
@@ -51,6 +54,8 @@ function crearEstructuraHojas() {
   mesTab(book, 'MES_Planos', ['revision','actualizado','planoJSON'], true);
   mesTab(book, 'MES_Plano_Actual', MES_MAP_CURRENT_HEADER, true);
   mesTab(book, 'MES_Plano_Elementos', MES_MAP_ELEMENTS_HEADER, true);
+  mesTab(book, 'MES_Planificaciones', MES_PLAN_HEADER, true);
+  mesTab(book, 'MES_Planificacion_Detalle', MES_PLAN_DETAIL_HEADER, true);
   mesTab(book, 'MES_Inventario', MES_STOCK_HEADER, true);
   const inventario = book.getSheetByName('MES_Inventario');
   if (!inventario.getRange(1, 7).getValue()) inventario.getRange(1, 7).setValue('paladasOperativas');
@@ -377,12 +382,61 @@ function mesState() {
         antesTon: Number(r[7]), diferenciaTon: Number(r[8]),
         responsable: r[9] })).reverse() : [];
   return { ok: true, revision: mesRevision(book), etag: mesDigest(stock), stock,
-    catalogos: mesCatalogos(book), reports, ajustesRecientes,
-    destinatarios: mesRecipients(book), informes: mesReportRows(book).slice(-30).map(r => ({ id: String(r[0]), url: String(r[3]),
+    catalogos: mesCatalogos(book), reports, ajustesRecientes, planificacion: mesReadPlan(book),
+    destinatarios: mesRecipients(book), informes: mesReportRows(book).slice(-30).map(r => ({ id: String(r[0]), fecha: String(r[1] || ''), url: String(r[3]),
       enviadoA: String(r[5] || ''), estadoEnvio: String(r[7] || '') })),
     telegramDestinatarios: mesTelegramRecipients(book), recordatorios: mesReminders(book).slice(-200),
     cantidadTurnos: turnos ? Math.max(0, turnos.getLastRow() - 1) : 0,
     conosValidados: stock.conos.length > 0 };
+}
+
+function mesReadPlan(book) {
+  const tab = mesTab(book, 'MES_Planificaciones', MES_PLAN_HEADER, true);
+  if (tab.getLastRow() < 2) return { revision: 0, plan: null };
+  const row = tab.getRange(tab.getLastRow(), 1, 1, 8).getValues()[0];
+  try { return { idPlan: String(row[0]), revision: Number(row[1]) || 0, estado: String(row[2]), plan: JSON.parse(String(row[5] || '{}')), actualizado: row[7] }; }
+  catch (_) { throw new Error('La última planificación guardada no tiene un formato válido.'); }
+}
+
+function mesPlanDetailRows(plan, idPlan, revision, updatedAt) {
+  const detail = [], add = (tipo, item, id, nombre, sector, turnos) => detail.push([idPlan,revision,tipo,String(id || ''),plan.fechaInicio || '',plan.fechaFin || '',
+    Array.isArray(turnos) ? turnos.join(', ') : String(turnos || ''),String(sector || ''),String(nombre || ''),JSON.stringify(item || {}),updatedAt]);
+  (plan.personal || []).forEach(x => add('PERSONAL',x,x.id,x.nombre,x.sector,x.turnos));
+  (plan.tareasPlaya || []).forEach(x => add('TAREA',x,x.id,x.accion,x.sector,x.turnos));
+  (plan.recetasAcopio || []).forEach(x => add('ACOPIO_PREVISTO',x,x.id,x.nombreNuevoAcopio,x.sectorDestino,x.turnos));
+  (plan.camiones || []).forEach(x => add('CAMION_PREVISTO',x,x.id,x.origen,x.destino,x.turnos));
+  (plan.indicacionesEstructuradas || []).forEach(x => add('INDICACION',x,x.id,x.descripcion || x.texto,x.sector,x.turno));
+  if (plan.observacionSemanal) add('OBSERVACION_SEMANAL',{ texto: plan.observacionSemanal },'observacion',plan.observacionSemanal,'','');
+  return detail;
+}
+
+function mesSavePlan(book, body) {
+  const plan = body.plan;
+  if (!plan || !/^\d{4}-\d{2}-\d{2}$/.test(String(plan.fechaInicio || '')) || !/^\d{4}-\d{2}-\d{2}$/.test(String(plan.fechaFin || '')))
+    throw new Error('La planificación debe indicar fecha de inicio y fin válidas.');
+  const current = mesReadPlan(book), expected = Number(body.expectedRevision || 0);
+  if (expected !== current.revision) throw new Error('La planificación cambió en otro equipo. Recargá la página antes de guardar.');
+  const text = JSON.stringify(plan);
+  if (text.length > 45000) throw new Error('La planificación es demasiado extensa para registrarla.');
+  const idPlan = String(plan.idPlan || `plan-${plan.fechaInicio}`), revision = current.revision + 1, now = new Date();
+  const tab = mesTab(book, 'MES_Planificaciones', MES_PLAN_HEADER, true);
+  tab.appendRow([idPlan,revision,'ACTIVA',plan.fechaInicio,plan.fechaFin,text,now,now]);
+  const details = mesPlanDetailRows({ ...plan, idPlan }, idPlan, revision, now);
+  if (details.length) mesTab(book, 'MES_Planificacion_Detalle', MES_PLAN_DETAIL_HEADER, true).getRange(
+    mesTab(book, 'MES_Planificacion_Detalle', MES_PLAN_DETAIL_HEADER, true).getLastRow() + 1, 1, details.length, MES_PLAN_DETAIL_HEADER.length).setValues(details);
+  return { idPlan, revision, plan: { ...plan, idPlan } };
+}
+
+function mesProductionHistory(e) {
+  const tab = SpreadsheetApp.openById(MES_PRODUCTION_ID).getSheetByName('Respuestas de formulario 1');
+  if (!tab) throw new Error('No se encontró «Respuestas de formulario 1» en Informe de Producción CMP – Planta CEVIL.');
+  const last = tab.getLastRow(), offset = Math.max(0, Math.floor(Number(e.parameter.offset) || 0)), size = 100;
+  const start = Math.max(2, last - offset - size + 1), count = Math.max(0, last - start + 1);
+  const raw = count ? tab.getRange(start, 1, count, Math.min(65, tab.getLastColumn())).getDisplayValues().reverse() : [];
+  const filas = raw.filter(r => r[57] && r[2]).map(r => [r[57],r[2],r[1],r[3],r[21],r[32],r[33],r[60],r[61],r[62],r[63],r[64]]);
+  return { ok: true, fuente: 'Informe de Producción CMP – Planta CEVIL', hoja: 'Respuestas de formulario 1',
+    encabezados: ['Fecha (BF)','Turno (C)','Supervisor','Novedades molienda y silo','Maquinista molienda','Producción molienda','Pala molienda','Producción silo','Pala silo','Maquinista silo','Novedades generales','Tiempo extrusora'],
+    filas, offset, hayMas: start > 2 };
 }
 
 function mesHistorical(e) {
@@ -406,7 +460,7 @@ function doGet(e) {
   try {
     if (e.parameter?.action === 'health') return mesJson({ ok: true, servicio: 'MES Molienda', version: 3 });
     if (!mesAuthorized(e.parameter?.token)) return mesJson({ ok: false, error: 'No autorizado' });
-    return mesJson(e.parameter.action === 'historical' ? mesHistorical(e) : e.parameter.action === 'getMap' ? mesMapSnapshot() : mesState());
+    return mesJson(e.parameter.action === 'productionHistory' ? mesProductionHistory(e) : e.parameter.action === 'historical' ? mesHistorical(e) : e.parameter.action === 'getMap' ? mesMapSnapshot() : mesState());
   }
   catch (error) { return mesJson({ ok: false, error: error.message }); }
 }
@@ -416,6 +470,10 @@ function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
     if (!mesAuthorized(body.token)) throw new Error('No autorizado');
+    if (body.action === 'savePlan') {
+      if (!lock.tryLock(20000)) throw new Error('Planificación ocupada. Reintentá.');
+      return mesJson({ ok: true, planificacion: mesSavePlan(SpreadsheetApp.openById(MES_PRIMARY_ID), body) });
+    }
     if (body.action === 'saveMap') {
       if (!lock.tryLock(20000)) throw new Error('Plano ocupado. Reintentá.');
       const book = SpreadsheetApp.openById(MES_PRIMARY_ID);
@@ -720,6 +778,7 @@ function mesMapElementRows(map, revision, updatedAt) {
   push('SILO', { id: 'bateria-silo', nombre: 'Batería de silo' }, map.posicionSiloConos);
   map.elementosMapa.forEach(x => push('ELEMENTO', x));
   map.reservas.forEach(x => push('RESERVA', { ...x, nombre: x.nombreNuevoAcopio }));
+  if (map.referenciaCardinal) push('REFERENCIA_CARDINAL', { ...map.referenciaCardinal, id: 'referencia-cardinal', nombre: 'Referencia cardinal' });
   return out;
 }
 
@@ -755,7 +814,7 @@ function mesEnsureMapInventory(book, map) {
 }
 
 function mesValidateMap(map) {
-  const allowed = ['schema','verticesPoligono','sectoresVirtuales','posicionNaveMolienda','posicionSiloConos','posicionCajones','posicionConos','elementosMapa','acopios','conos','reservas','parametros'];
+  const allowed = ['schema','verticesPoligono','sectoresVirtuales','posicionNaveMolienda','posicionSiloConos','posicionCajones','posicionConos','elementosMapa','referenciaCardinal','acopios','conos','reservas','parametros'];
   if (!map || ![1,2].includes(map.schema) || Object.keys(map).some(k => allowed.indexOf(k) < 0)) throw new Error('Formato del plano inválido.');
   ['verticesPoligono','sectoresVirtuales','elementosMapa','acopios'].forEach(k => {
     if (!Array.isArray(map[k]) || map[k].length > 300) throw new Error('Colección del plano inválida: ' + k);
@@ -787,6 +846,8 @@ function mesValidateMap(map) {
     });
     const p = map.parametros;
     if (!p || !Number.isFinite(p.densidadTierra) || p.densidadTierra <= 0 || p.densidadTierra > 5 || ![3,5,10].includes(p.escalaCalidad) || !Array.isArray(p.caracteristicasTierra)) throw new Error('Parámetros de tierra inválidos.');
+    const r = map.referenciaCardinal;
+    if (!r || !Number.isFinite(r.x) || !Number.isFinite(r.y) || !Number.isFinite(r.tamano) || !Number.isFinite(r.rotacion) || typeof r.visible !== 'boolean') throw new Error('Referencia cardinal inválida.');
   }
 }
 

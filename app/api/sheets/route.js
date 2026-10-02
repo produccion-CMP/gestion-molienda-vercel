@@ -17,7 +17,7 @@ export async function POST(request) {
   let body;
   try { body = await request.json(); } catch { return Response.json({ ok: false, error: 'JSON inválido' }, { status: 400 }); }
   if (!isAppsScriptUrl(body.url)) return Response.json({ ok: false, error: 'URL de Apps Script inválida' }, { status: 400 });
-  if (!['state', 'historical', 'getMap', 'saveMap', 'saveAudit', 'initializeCones', 'adjustStock', 'saveRecipient', 'generateReport', 'sendReport',
+  if (!['state', 'historical', 'productionHistory', 'getMap', 'saveMap', 'savePlan', 'saveAudit', 'initializeCones', 'adjustStock', 'saveRecipient', 'generateReport', 'sendReport',
     'saveTelegramRecipient', 'saveReminder', 'completeReminder'].includes(body.action))
     return Response.json({ ok: false, error: 'Acción no permitida' }, { status: 400 });
   if (['saveMap', 'adjustStock'].includes(body.action)) {
@@ -31,13 +31,13 @@ export async function POST(request) {
   try {
     const url = new URL(body.url);
     let response;
-    if (!['state', 'historical', 'getMap'].includes(body.action)) {
+    if (!['state', 'historical', 'productionHistory', 'getMap'].includes(body.action)) {
       response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({ ...body.payload, action: body.action, token }), signal: AbortSignal.timeout(45000) });
     } else {
       url.searchParams.set('action', body.action);
       url.searchParams.set('token', token);
-      if (body.action === 'historical') {
+      if (['historical', 'productionHistory'].includes(body.action)) {
         if (Number.isInteger(body.gid)) url.searchParams.set('gid', String(body.gid));
         if (Number.isInteger(body.offset) && body.offset >= 0) url.searchParams.set('offset', String(body.offset));
       }

@@ -422,8 +422,6 @@ const App = () => {
   const [appsScriptUrl, setAppsScriptUrl] = useState(APPS_SCRIPT_URL);
   const [estadoSheet, setEstadoSheet] = useState({ estado: 'sin_conectar', etag: null, revision: null, aplicado: false });
   const [historicoSheet, setHistoricoSheet] = useState(null);
-  const [historicoGid, setHistoricoGid] = useState(1381238472);
-  const [historicoFuente, setHistoricoFuente] = useState('csv');
   const [historicoOffset, setHistoricoOffset] = useState(0);
   const [cargandoHistorico, setCargandoHistorico] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -474,6 +472,7 @@ const App = () => {
   const [posicionCajones, setPosicionCajones] = useState(CAJONES_INICIALES);
   const [posicionConos, setPosicionConos] = useState(CONOS_INICIALES);
   const [elementosMapa, setElementosMapa] = useState([]);
+  const [referenciaCardinal, setReferenciaCardinal] = useState({ visible: true, x: 900, y: 62, tamano: 34, rotacion: 0 });
   const [verticeSeleccionado, setVerticeSeleccionado] = useState(null);
 
   const [reservasPlano, setReservasPlano] = useState([]);
@@ -504,6 +503,7 @@ const App = () => {
     observacionSemanal: '',
     indicacionesEstructuradas: []
   });
+  const [revisionPlan, setRevisionPlan] = useState(0);
 
   const [control, setControl] = useState({
     fechaAuditada: fechaLocal(),
@@ -594,6 +594,7 @@ const App = () => {
           .map(([id, c]) => [id, { ...c, x: c.x + saved.posicionSiloConos.x - 300,
             y: c.y + saved.posicionSiloConos.y - 350 }])));
         if (Array.isArray(saved.elementosMapa)) setElementosMapa(saved.elementosMapa);
+        if (saved.referenciaCardinal) setReferenciaCardinal(prev => ({ ...prev, ...saved.referenciaCardinal }));
         if (Array.isArray(saved.historialReportes)) setHistorialReportes(saved.historialReportes);
         if (Array.isArray(saved.ajustesManuales)) setAjustesManuales(saved.ajustesManuales);
         if (Number.isFinite(saved.densidadTierra) && saved.densidadTierra > 0) setDensidadTierra(saved.densidadTierra);
@@ -662,7 +663,7 @@ const App = () => {
     const snapshot = {
       version: 2, reservasPlano, operadores, maquinas, canteras, sectores, destinosGenerales, accionesPlaya,
       caracteristicasTierra, escalaCalidad, comentariosMejora, verticesPoligono, sectoresVirtuales, posicionNaveMolienda,
-      posicionSiloConos, posicionCajones, posicionConos, elementosMapa,
+      posicionSiloConos, posicionCajones, posicionConos, elementosMapa, referenciaCardinal,
       stockPlaya, stockSilos, stockCajon2, plan, control, recordatorios,
       historialReportes, ajustesManuales, densidadTierra, datosEjemplo, conosValidados, lecturasClima, appsScriptUrl, adminPin,
       migracionParcial, darkMode
@@ -671,7 +672,7 @@ const App = () => {
     catch { setToast({ visible: true, mensaje: 'Almacenamiento lleno. Exportá un respaldo desde Configuración.', tipo: 'error' }); }
   }, [hydrated, reservasPlano, operadores, maquinas, canteras, sectores, destinosGenerales, accionesPlaya,
     caracteristicasTierra, escalaCalidad, comentariosMejora, verticesPoligono, sectoresVirtuales, posicionNaveMolienda,
-    posicionSiloConos, posicionCajones, posicionConos, elementosMapa,
+    posicionSiloConos, posicionCajones, posicionConos, elementosMapa, referenciaCardinal,
     stockPlaya, stockSilos, stockCajon2, plan, control, recordatorios,
     historialReportes, ajustesManuales, densidadTierra, datosEjemplo, conosValidados, lecturasClima, appsScriptUrl, adminPin,
     migracionParcial, darkMode]);
@@ -760,7 +761,12 @@ const App = () => {
       });
       if (Array.isArray(remoto.informes)) {
         const byId = new Map(remoto.informes.map(x => [x.id, x]));
-        setHistorialReportes(prev => prev.map(x => byId.has(String(x.id)) ? { ...x, informe: byId.get(String(x.id)) } : x));
+        setHistorialReportes(prev => [...prev.map(x => byId.has(String(x.id)) ? { ...x, informe: byId.get(String(x.id)) } : x),
+          ...remoto.informes.filter(x => !prev.some(y => String(y.id) === String(x.id))).map(x => ({ id: x.id, fecha: x.fecha || '', informe: x, sincronizacion: 'Google Sheets' }))]);
+      }
+      if (remoto.planificacion?.plan) {
+        setPlan(prev => prev.activa && prev.idPlan && prev.idPlan === remoto.planificacion.idPlan ? prev : ({ ...prev, ...remoto.planificacion.plan, activa: true, idPlan: remoto.planificacion.idPlan }));
+        setRevisionPlan(Number(remoto.planificacion.revision) || 0);
       }
       if (remoto.ajustesRecientes?.length) setAjustesManuales(prev => {
         const ids = new Set(prev.map(a => a.id));
@@ -812,18 +818,14 @@ const App = () => {
     if (currentView !== 'historico') return;
     let activo = true;
     setCargandoHistorico(true);
-    const origen = historicoFuente === 'sheets' && appsScriptUrl && appsScriptUrl !== 'URL_AQUI'
-      ? consultarAppsScript('historical', { gid: historicoGid, offset: historicoOffset })
-      : fetch(`/api/history?offset=${historicoOffset}`).then(async response => {
-          const data = await response.json();
-          if (!response.ok || !data.ok) throw new Error(data.error || 'Histórico no disponible');
-          return data;
-        });
+    const origen = !appsScriptUrl || appsScriptUrl === 'URL_AQUI'
+      ? Promise.reject(new Error('Configurá Apps Script para consultar el histórico productivo.'))
+      : consultarAppsScript('productionHistory', { offset: historicoOffset });
     origen.then(data => { if (activo) setHistoricoSheet(data); })
       .catch(error => { if (activo) setHistoricoSheet({ error: error.message, tabs: [], filas: [] }); })
       .finally(() => { if (activo) setCargandoHistorico(false); });
     return () => { activo = false; };
-  }, [currentView, historicoGid, historicoOffset, appsScriptUrl, historicoFuente]);
+  }, [currentView, historicoOffset, appsScriptUrl]);
 
   const showToast = (mensaje, tipo = "info") => {
     setToast({ visible: true, mensaje, tipo });
@@ -1001,6 +1003,17 @@ const App = () => {
         !prev.some(a => a.recetaId === rec.id || clave(a.nombre) === clave(rec.nombreNuevoAcopio)));
       return [...prev, ...nuevos.map(acopioDesdeReceta)];
     });
+  };
+
+  const guardarPlanificacionCompartida = async () => {
+    if (!appsScriptUrl || appsScriptUrl === 'URL_AQUI') throw new Error('Configurá Apps Script antes de publicar la planificación.');
+    const planARegistrar = { ...plan, activa: true };
+    const result = await consultarAppsScript('savePlan', { payload: { action: 'savePlan', expectedRevision: revisionPlan, plan: planARegistrar } });
+    const remoto = result.planificacion;
+    setPlan({ ...remoto.plan, activa: true });
+    setRevisionPlan(remoto.revision);
+    materializarAcopiosPlanificados();
+    showToast('Planificación guardada en Google Sheets y publicada para el equipo.');
   };
 
   const ubicarAcopioFuturoEnPlano = (receta) => {
@@ -1804,7 +1817,7 @@ const App = () => {
 
   const crearPlanoActual = () => extractSharedMap({ verticesPoligono, sectoresVirtuales, posicionNaveMolienda, posicionSiloConos,
     posicionCajones, posicionConos, elementosMapa, stockPlaya, stockSilos, reservas: reservasPlano,
-    densidadTierra, escalaCalidad, caracteristicasTierra });
+    referenciaCardinal, densidadTierra, escalaCalidad, caracteristicasTierra });
   const obtenerSeleccionPlano = () => acopioSeleccionadoPlano;
   const obtenerSilosPlano = () => stockSilos;
   const aplicarPlanoCompartido = map => {
@@ -1812,6 +1825,7 @@ const App = () => {
     setVerticesPoligono(map.verticesPoligono); setSectoresVirtuales(map.sectoresVirtuales);
     setPosicionNaveMolienda(map.posicionNaveMolienda); setPosicionSiloConos(map.posicionSiloConos);
     setPosicionCajones(map.posicionCajones); setPosicionConos(map.posicionConos); setElementosMapa(map.elementosMapa);
+    setReferenciaCardinal(map.referenciaCardinal ?? { visible: true, x: 900, y: 62, tamano: 34, rotacion: 0 });
     setStockPlaya(prev => mergeMapItems(prev, map.acopios, { toneladas: 0, m3Estimados: 0, paladas: 0 }).map(a => historialReportes.some(r => r.sincronizacion === 'pendiente') ? a : withInventory(a, inventarioPlanoRef.current?.stock.acopios, map.parametros.densidadTierra)));
     setStockSilos(prev => mergeMapItems(prev, map.conos, { toneladas: 0, paladasOperativas: 0, humedadNivel: 1 }).map(a => historialReportes.some(r => r.sincronizacion === 'pendiente') ? a : withInventory(a, inventarioPlanoRef.current?.stock.conos, map.parametros.densidadTierra)));
     setReservasPlano(map.reservas);
@@ -1831,6 +1845,7 @@ const App = () => {
     if (!editar && !planoPublicado) return <div className="p-8">Todavía no se cargó un plano compartido. Revisá el estado de conexión de arriba. El supervisor debe publicar el plano inicial desde el editor.</div>;
     const vista = !editar && planoPublicado ? planoPublicado : crearPlanoActual();
     const { verticesPoligono, sectoresVirtuales, posicionNaveMolienda, posicionSiloConos, posicionCajones, posicionConos, elementosMapa } = vista;
+    const referencia = vista.referenciaCardinal ?? { visible: true, x: 900, y: 62, tamano: 34, rotacion: 0 };
     const stockSilos = editar ? obtenerSilosPlano().filter(s => s.enPlano !== false) : vista.conos.map(s => withInventory(s, inventarioPlano?.conos, vista.parametros.densidadTierra));
 
     const acopiosPlano = editar ? stockPlaya.filter(a => a.enPlano !== false) : vista.acopios.map(a => withInventory(a, inventarioPlano?.acopios, vista.parametros.densidadTierra));
@@ -1912,6 +1927,10 @@ const App = () => {
                   className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${modoMapa === 'tolvas_silos' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'}`}
                 >
                   Tolvas & Silos
+                </button>
+                <button type="button" onClick={() => setMapInteractionMode('referencia')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${modoMapa === 'referencia' ? 'bg-sky-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'}`}>
+                  Norte
                 </button>
               </div>}
 
@@ -2034,7 +2053,7 @@ const App = () => {
             <div className={`lg:col-span-2 ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-white border-slate-200'} p-6 rounded-3xl border flex flex-col justify-between shadow-2xl relative overflow-hidden`}>
               <div className="flex flex-wrap justify-between items-center mb-3 gap-2">
                 <span className="text-xs font-black uppercase tracking-widest text-cyan-400">
-                  Modo Activo: {modoMapa === 'view' ? 'Inspección' : modoMapa === 'acopios' ? 'Mover Acopios' : modoMapa === 'sectores' ? 'Mover/Redimensionar Sectores' : modoMapa === 'tolvas_silos' ? 'Mover Tolvas y Conos Silo' : 'Deformar Vértices'}
+                  Modo Activo: {modoMapa === 'view' ? 'Inspección' : modoMapa === 'acopios' ? 'Mover Acopios' : modoMapa === 'sectores' ? 'Mover/Redimensionar Sectores' : modoMapa === 'tolvas_silos' ? 'Mover Tolvas y Conos Silo' : modoMapa === 'referencia' ? 'Referencia cardinal' : 'Deformar Vértices'}
                 </span>
 
                 <div className="flex items-center gap-4 text-xs font-black">
@@ -2079,6 +2098,13 @@ const App = () => {
                   </defs>
 
                   <rect width="940" height="480" fill="url(#gridCAD)" />
+                  {referencia.visible !== false && <g transform={`translate(${referencia.x} ${referencia.y}) rotate(${referencia.rotacion || 0})`} aria-label="Referencia cardinal">
+                    <circle r={referencia.tamano} fill={darkMode ? '#0f172a' : '#ffffff'} stroke="#38bdf8" strokeWidth="2" />
+                    <path d={`M0 -${referencia.tamano - 6} L8 4 L0 -2 L-8 4 Z`} fill="#ef4444" />
+                    <path d={`M0 ${referencia.tamano - 6} L6 0 L0 3 L-6 0 Z`} fill="#94a3b8" />
+                    <text y={-referencia.tamano - 7} textAnchor="middle" fill="#38bdf8" fontSize="13" fontWeight="800">N</text>
+                    <text x={referencia.tamano + 8} y="4" textAnchor="middle" fill="#94a3b8" fontSize="11">E</text><text x={-referencia.tamano - 8} y="4" textAnchor="middle" fill="#94a3b8" fontSize="11">O</text>
+                  </g>}
 
                   <polygon
                     points={stringPuntosPoligono}
@@ -2429,6 +2455,18 @@ const App = () => {
                       setVerticesPoligono(prev => prev.filter(v => v.id !== verticeSeleccionado)); setVerticeSeleccionado(null);
                     }}>Quitar vértice</button>
                   </div>}
+                </div>
+              ) : modoMapa === 'referencia' ? (
+                <div className="space-y-4">
+                  <h4 className="text-lg font-black text-sky-300">Referencia cardinal</h4>
+                  <p className="text-sm text-slate-400">Esta marca se guarda junto al plano compartido para que todos consulten la misma orientación.</p>
+                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={referenciaCardinal.visible !== false}
+                    onChange={e => setReferenciaCardinal(prev => ({ ...prev, visible: e.target.checked }))} /> Mostrar en el plano</label>
+                  <div className="grid grid-cols-2 gap-3">{[['x','X',0,940],['y','Y',0,480],['tamano','Tamaño',18,70],['rotacion','Rotación',0,359]].map(([campo,label,min,max]) =>
+                    <label key={campo} className="text-sm text-slate-400">{label}<input type="number" min={min} max={max} value={referenciaCardinal[campo]}
+                      onChange={e => setReferenciaCardinal(prev => ({ ...prev, [campo]: Math.max(min, Math.min(max, numero(e.target.value))) }))}
+                      className={`mt-1 w-full p-2 rounded-lg ${themeClasses.input}`} /></label>)}</div>
+                  <button type="button" className="text-sm text-cyan-300 underline" onClick={() => setReferenciaCardinal({ visible: true, x: 900, y: 62, tamano: 34, rotacion: 0 })}>Restaurar posición</button>
                 </div>
               ) : modoMapa === 'tolvas_silos' ? (
                 <div className="space-y-4">
@@ -2897,26 +2935,14 @@ const App = () => {
     <div className="max-w-7xl mx-auto space-y-5">
       <header className={`${themeClasses.card} border rounded-3xl p-6 flex flex-wrap justify-between gap-3`}>
         <div><h2 className="text-2xl font-black">Novedades y producción histórica</h2>
-          <p className="text-sm text-slate-400">Consulta de la planilla histórica de Molienda, Silo y producción, en páginas de hasta 100 registros.</p></div>
-        <div className="flex gap-2"><a href={SHEET_HISTORICA_URL} target="_blank" rel="noreferrer" className="px-4 py-2 rounded-xl border border-cyan-500 text-cyan-300 text-sm">Abrir hoja original</a>
+          <p className="text-sm text-slate-400">Fuente: Informe de Producción CMP – Planta CEVIL · «Respuestas de formulario 1». Fecha: columna BF · Turno: columna C.</p></div>
+        <div className="flex gap-2">
           <button onClick={() => setCurrentView('dashboard')} className="px-4 py-2 rounded-xl bg-slate-800 text-white text-sm">Volver</button></div>
       </header>
       <section className={`${themeClasses.card} border rounded-3xl p-5 space-y-4`}>
-          <div className="flex flex-wrap gap-2 text-sm">
-            <button type="button" className={`rounded-lg px-3 py-2 border ${historicoFuente === 'csv' ? 'border-cyan-400 text-cyan-200' : 'border-slate-600'}`}
-              onClick={() => { setHistoricoFuente('csv'); setHistoricoOffset(0); setHistoricoGid(1381238472); }}>CSV publicado</button>
-            {appsScriptUrl && appsScriptUrl !== 'URL_AQUI' && <button type="button"
-              className={`rounded-lg px-3 py-2 border ${historicoFuente === 'sheets' ? 'border-cyan-400 text-cyan-200' : 'border-slate-600'}`}
-              onClick={() => { setHistoricoFuente('sheets'); setHistoricoOffset(0); }}>Otras pestañas vía Apps Script</button>}
-          </div>
-          <div className="flex flex-wrap items-center gap-3"><label className="text-sm font-bold">Pestaña
-            <select value={historicoGid} onChange={e => { setHistoricoGid(Number(e.target.value)); setHistoricoOffset(0); }}
-              className={`ml-2 p-2 rounded-lg ${themeClasses.input}`}>
-              {(historicoSheet?.tabs ?? [{ gid: 1381238472, nombre: 'Pestaña enlazada' }]).map(t =>
-                <option key={t.gid} value={t.gid}>{t.nombre} ({t.filas ?? '—'} filas)</option>)}
-            </select></label>
+          <div className="flex flex-wrap items-center gap-3"><span className="rounded-lg border border-cyan-500/50 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-100">Histórico validado de producción</span>
             <span className="text-sm text-slate-400">{cargandoHistorico ? 'Consultando…' : historicoSheet?.filas?.length ?
-              `${historicoSheet.filas.length} filas · ${historicoSheet.totalFilas ?? '?'} registros en la pestaña` : 'Sin filas'}</span>
+              `${historicoSheet.filas.length} registros en esta página` : 'Sin filas'}</span>
           </div>
           {historicoSheet?.error && <p role="alert" className="text-red-300 text-sm">{historicoSheet.error}</p>}
           <div className="overflow-auto max-h-[65vh] rounded-xl border border-slate-700">
@@ -3801,16 +3827,14 @@ const App = () => {
             </button>
           ) : (
             <button
-              onClick={() => {
-                materializarAcopiosPlanificados();
-                setPlan(prev => ({ ...prev, activa: true }));
-                showToast("Plan Semanal confirmado y activado.");
-                setCurrentView('dashboard');
+              onClick={async () => {
+                try { await guardarPlanificacionCompartida(); setCurrentView('dashboard'); }
+                catch (error) { showToast(error.message, 'error'); }
               }}
               className="px-10 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-slate-950 font-black rounded-xl shadow-xl hover:from-emerald-400 hover:to-teal-400 transition-all flex items-center gap-2 cursor-pointer"
             >
               <Icons.Check />
-              <span>Confirmar Plan</span>
+              <span>Guardar plan para el equipo</span>
             </button>
           )}
         </div>
@@ -4527,6 +4551,7 @@ const App = () => {
       { id: 'calidad', label: 'Propiedades Tierra' },
       { id: 'plano', label: 'Editor del plano' },
       { id: 'destinatarios', label: 'Informes por correo' },
+      { id: 'informes', label: 'PDF diarios' },
       { id: 'telegram', label: 'Avisos Telegram' },
       { id: 'parametros', label: 'Densidad Ton/m³' }
     ];
@@ -4846,6 +4871,15 @@ const App = () => {
                   className="rounded-lg border border-slate-500 px-3 py-1">{d.activo ? 'Desactivar' : 'Activar'}</button></div>)}</div>
             </section>}
 
+            {activeConfigTab === 'informes' && <section className="space-y-4">
+              <h3 className="text-lg font-bold">Base de informes PDF diarios</h3>
+              <p className="text-sm text-slate-400">Los PDF generados y enviados quedan registrados en la hoja «MES_Informes». Esta vista es solo para supervisores.</p>
+              <button type="button" onClick={cargarEstadoSheet} className="rounded-lg border border-cyan-500 px-3 py-2 text-sm text-cyan-200">Actualizar listado</button>
+              <div className="overflow-auto rounded-xl border border-slate-700"><table className="min-w-full text-sm"><thead className="bg-slate-800 text-cyan-100"><tr><th className="p-2 text-left">Fecha</th><th className="p-2 text-left">Cierre</th><th className="p-2 text-left">Estado</th><th className="p-2">PDF</th></tr></thead><tbody>
+                {(historialReportes.filter(r => r.informe).map(r => ({ ...r.informe, fecha: r.fecha })) || []).map(r => <tr key={r.id} className="border-t border-slate-800"><td className="p-2">{r.fecha || '—'}</td><td className="p-2">{r.id}</td><td className="p-2">{r.estadoEnvio || 'PENDIENTE'}</td><td className="p-2">{r.url ? <a className="text-cyan-300 underline" href={r.url} target="_blank" rel="noreferrer">Abrir</a> : 'Aún no generado'}</td></tr>)}
+              </tbody></table></div>
+            </section>}
+
             {/* PARÁMETROS GENERALES */}
             {activeConfigTab === 'parametros' && (
               <div className="space-y-5 max-w-2xl">
@@ -4918,18 +4952,18 @@ const App = () => {
                       }} />
                   </label>
                 </div>
-                <p className="text-xs text-amber-400">El PIN protege solo esta interfaz; no sustituye autenticación en Apps Script.</p>
-                <label className="block text-xs text-slate-400">Cambiar PIN local de supervisor
+                <p className="text-xs text-amber-400">Usá la misma clave numérica que guardaste como MES_MAP_PIN en Vercel. Es la que permite publicar plano y ajustes para todos.</p>
+                <label className="block text-xs text-slate-400">Cambiar clave de supervisor
                   <input type="password" inputMode="numeric" minLength="4" maxLength="12"
                     value={nuevoPin} onChange={e => setNuevoPin(e.target.value.replace(/\D/g, '').slice(0, 12))}
-                    placeholder="Nuevo PIN de 4 a 12 dígitos"
+                    placeholder="Nueva clave de 8 a 12 dígitos"
                     className={`mt-1 w-full p-2 rounded-lg ${themeClasses.input}`} />
                 </label>
                 <button type="button" onClick={() => {
-                  if (!/^\d{4,12}$/.test(nuevoPin)) return showToast('El PIN debe tener entre 4 y 12 dígitos.', 'error');
-                  setAdminPin(nuevoPin); setNuevoPin(''); showToast('PIN local actualizado.');
+                  if (!/^\d{8,12}$/.test(nuevoPin)) return showToast('La clave debe tener entre 8 y 12 dígitos.', 'error');
+                  setAdminPin(nuevoPin); setPinPublicacion(nuevoPin); setNuevoPin(''); showToast('Clave de supervisor actualizada. Actualizá MES_MAP_PIN en Vercel con el mismo valor.');
                 }} className="px-4 py-2 rounded-lg bg-cyan-500 text-slate-950 text-xs font-black">
-                  Guardar nuevo PIN
+                  Guardar clave
                 </button>
               </div>
             )}
@@ -4962,6 +4996,7 @@ const App = () => {
               e.preventDefault();
               if (pinInput === adminPin && adminPin.length >= 4) {
                 setModalPinAbierto(false); setPinInput('');
+                setPinPublicacion(pinInput);
                 if (pinDestino === 'editorPlano') { setConfigDesbloqueada(true); setMapaDesbloqueado(true); setCurrentView('editorPlano'); }
                 else { setConfigDesbloqueada(true); setCurrentView('catalogos'); }
               } else { showToast('PIN incorrecto. Acceso denegado.', 'error'); setPinInput(''); }
@@ -5287,7 +5322,7 @@ const App = () => {
               }}
               className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-black rounded-xl text-xs cursor-pointer shadow-md"
             >
-              Publicar en Pizarrón
+              Ingresar a configuración
             </button>
           </div>
         </div>
@@ -5305,11 +5340,11 @@ const App = () => {
         <button type="button" className="mes-topbar-config" onClick={() => { setPinDestino('catalogos'); setModalPinAbierto(true); }} aria-label="Configuración"><Icons.Settings /></button>
       </nav>}
       {hydrated && <SharedMapPanel draft={crearPlanoActual()}
-        editing={configDesbloqueada && mapaDesbloqueado} authorizeStock={currentView === 'conciliacion'}
-        visible={['planoPlaya','editorPlano','conciliacion'].includes(currentView)}
+        editing={configDesbloqueada && mapaDesbloqueado}
+        visible={currentView === 'editorPlano'}
         request={consultarAppsScript} onApply={aplicarPlanoCompartido} onInventory={recibirInventarioPlano}
         onPublished={setPlanoPublicado} onStatus={status => setEstadoPlano(prev => ({ ...prev, ...status }))}
-        pin={pinPublicacion} onPin={setPinPublicacion} />}
+        pin={pinPublicacion} />}
       {/* Ruteador de Vistas */}
       {currentView === 'welcome' && renderWelcome()}
       {currentView === 'dashboard' && renderDashboard()}

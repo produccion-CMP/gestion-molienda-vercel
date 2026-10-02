@@ -71,6 +71,6 @@ test('la hoja de elementos contiene todos los objetos del plano para consulta co
   const full=extractSharedMap({...map,conos:[{id:'cono-1',nombre:'Cono 1',activo:true}], reservas:[{id:'r1',nombreNuevoAcopio:'Acopio previsto'}], parametros:{densidadTierra:1.5,escalaCalidad:3,caracteristicasTierra:[]},
     posicionCajones:{c1:{nombre:'Cajón 1',x:2,y:3,w:4,h:5,visible:true}}, elementosMapa:[{id:'e1',nombre:'Balanza',x:3,y:4,w:5,h:6,forma:'rectangulo',color:'#fff'}]});
   const rows=ctx.mesMapElementRows(full,7,'2026-10-01T00:00:00Z');
-  assert.deepEqual(new Set(rows.map(r=>r[2])),new Set(['ACOPIO','CONO','CAJON','LIMITE','NAVE','SILO','ELEMENTO','RESERVA']));
+  assert.deepEqual(new Set(rows.map(r=>r[2])),new Set(['ACOPIO','CONO','CAJON','LIMITE','NAVE','SILO','ELEMENTO','RESERVA','REFERENCIA_CARDINAL']));
   assert.equal(rows.find(r=>r[2]==='ACOPIO')[4],'Acopio');assert.equal(rows.find(r=>r[2]==='CONO')[4],'Cono 1');
 });

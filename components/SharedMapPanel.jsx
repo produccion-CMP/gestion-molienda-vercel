@@ -1,7 +1,7 @@
 "use client";
 import React, { useEffect, useRef, useState } from 'react';
 import { extractSharedMap } from '../lib/shared-map.js';
-export default function SharedMapPanel({ draft, editing, authorizeStock, visible, request, onApply, onInventory, onPublished, onStatus, pin, onPin }) {
+export default function SharedMapPanel({ draft, editing, visible, request, onApply, onInventory, onPublished, onStatus, pin }) {
   const fingerprint = JSON.stringify(draft);
   const [baseline, setBaseline] = useState(null);
   const [revision, setRevision] = useState(null);
@@ -54,8 +54,7 @@ export default function SharedMapPanel({ draft, editing, authorizeStock, visible
   }, []);
   async function save() {
     if (revision === null || conflict || busy || running.current) return;
-    if (!pin) { setMessage('Ingresá el PIN de publicación configurado en Vercel.'); return; }
-    if (revision === 0 && !window.confirm('Publicar este plano inicial para todos? Los saldos existentes en Google Sheets se conservan.')) return;
+    if (!pin) { setMessage('Ingresá a Configuración con la clave de supervisor antes de publicar.'); return; }
     setBusy(true); running.current = true;
     const saved = current.current.draft;
     try {
@@ -69,14 +68,13 @@ export default function SharedMapPanel({ draft, editing, authorizeStock, visible
     const url = URL.createObjectURL(new Blob([JSON.stringify(draft, null, 2)], { type: 'application/json' }));
     const a = document.createElement('a'); a.href = url; a.download = 'plano-borrador.json'; a.click(); URL.revokeObjectURL(url);
   }
-  return <section hidden={!visible && !dirty} className="mx-auto max-w-7xl rounded-xl border border-cyan-600 bg-slate-900 text-slate-100 p-4 space-y-3">
+  return <section hidden={!visible} className="mx-auto max-w-7xl rounded-xl border border-cyan-600 bg-slate-900 text-slate-100 p-4 space-y-3">
     <p role="status" className="text-sm">{message}</p>
     <p className="text-xs text-slate-300">{dirty ? 'Borrador sin publicar. Los demás siguen viendo la última versión guardada.' : 'Actualización automática cada 30 segundos y al volver a la pestaña.'} Las toneladas se consultan en el inventario central; el dibujo no reemplaza saldos.</p>
     <div className="flex flex-wrap gap-3">
       <button type="button" disabled={busy} onClick={() => refresh(true)} className="border border-slate-500 rounded-lg px-3 py-2 text-sm">Cargar versión compartida</button>
-      {(editing || dirty) && <><button type="button" onClick={download} className="border border-slate-500 rounded-lg px-3 py-2 text-sm">Descargar borrador del plano</button></>}
-      {(editing || authorizeStock) && <label className="text-sm">PIN de publicación (servidor)<input type="password" autoComplete="off" value={pin} onChange={e => onPin(e.target.value)} className="block rounded border border-slate-500 bg-slate-800 text-white p-2" /></label>}
-      {editing && <><button type="button" onClick={save} disabled={busy || revision === null || conflict} className="rounded-lg px-3 py-2 text-sm bg-cyan-700 text-white disabled:opacity-40">{busy ? 'Publicando…' : 'Publicar plano para todos'}</button>
+      {editing && <><button type="button" onClick={save} disabled={busy || revision === null || conflict} className="rounded-lg px-3 py-2 text-sm bg-cyan-700 text-white disabled:opacity-40">{busy ? 'Guardando…' : 'Guardar cambios para todos'}</button>
+      <button type="button" onClick={download} className="border border-slate-500 rounded-lg px-3 py-2 text-sm">Descargar respaldo</button>
       <label className="border border-slate-500 rounded-lg px-3 py-2 text-sm cursor-pointer">Importar plano del respaldo<input type="file" accept=".json" className="hidden" disabled={busy || revision === null} onChange={async e => { const file = e.target.files?.[0]; if (!file) return; try { if (file.size > 8000000) throw new Error('Archivo demasiado grande.'); const map = extractSharedMap(JSON.parse(await file.text())); onApply(map); setMessage('Respaldo importado como borrador. Revisalo y pulsá Publicar plano para todos.'); } catch (error) { setMessage(error.message); } e.target.value = ''; }} /></label></>}
     </div>
   </section>;
