@@ -41,6 +41,15 @@ const numeroHistorico = (valor) => {
 };
 const redondear = (valor) => Math.round((valor + Number.EPSILON) * 100) / 100;
 const clave = (valor) => String(valor ?? '').trim().toLocaleLowerCase('es-AR');
+const consolidarConos = items => {
+  const vistos = new Set();
+  return (items ?? []).slice().reverse().filter(item => {
+    const nombre = clave(item.nombre);
+    if (!nombre || vistos.has(String(item.id)) || vistos.has(`nombre:${nombre}`)) return false;
+    vistos.add(String(item.id)); vistos.add(`nombre:${nombre}`);
+    return true;
+  }).reverse();
+};
 const partesOperario = op => {
   if (op.apellidos !== undefined || op.nombres !== undefined) return { apellidos: op.apellidos ?? '', nombres: op.nombres ?? '' };
   const nombre = String(op.nombre ?? '').trim();
@@ -561,6 +570,7 @@ const App = () => {
   const [modalParadaData, setModalParadaData] = useState(null);
   const [modalNuevoRecordatorioAbierto, setModalNuevoRecordatorioAbierto] = useState(false);
   const [nuevoRecordatorio, setNuevoRecordatorio] = useState({ para: "Todos", texto: "", prioridad: "normal", fechaAviso: '', horaAviso: '' });
+  const [reprogramandoRecordatorio, setReprogramandoRecordatorio] = useState(null);
 
   const [toast, setToast] = useState({ visible: false, mensaje: "", tipo: "info" });
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -846,10 +856,10 @@ const App = () => {
             m3Estimados: numero(r.m3Estimados) || redondear(numero(r.toneladas) / densidadTierra),
             calidades: {}, textura: { arcilla: 0, arena: 0, limo: 0 }, activo: r.activo ?? true }))];
         });
-        setStockSilos(prev => [...prev.map(s => { const r = remoto.stock.conos.find(x => clave(x.nombre) === clave(s.nombre) || String(x.id) === String(s.id));
+        setStockSilos(prev => consolidarConos([...prev.map(s => { const r = remoto.stock.conos.find(x => clave(x.nombre) === clave(s.nombre) || String(x.id) === String(s.id));
           return r ? { ...s, toneladas: numero(r.toneladas), humedadNivel: nivelHumedad(r.humedadNivel), paladasOperativas: numero(r.paladasOperativas), calidades: r.calidades ?? s.calidades ?? {} } : s; }),
           ...remoto.stock.conos.filter(r => !prev.some(s => clave(s.nombre) === clave(r.nombre) || String(s.id) === String(r.id)))
-            .map(r => ({ enPlano: !sharedDefinitionRef.current, id: r.id, nombre: r.nombre, toneladas: numero(r.toneladas), humedadNivel: nivelHumedad(r.humedadNivel), paladasOperativas: numero(r.paladasOperativas), calidades: r.calidades ?? {}, activo: true }))]);
+            .map(r => ({ enPlano: !sharedDefinitionRef.current, id: r.id, nombre: r.nombre, toneladas: numero(r.toneladas), humedadNivel: nivelHumedad(r.humedadNivel), paladasOperativas: numero(r.paladasOperativas), calidades: r.calidades ?? {}, activo: true }))]));
         if (!sharedDefinitionRef.current) setPosicionConos(prev => {
           const nuevos = remoto.stock.conos.filter(r => !prev[r.id]);
           return Object.fromEntries([...Object.entries(prev), ...nuevos.map((r, i) =>
@@ -1895,7 +1905,7 @@ const App = () => {
     setPosicionCajones(map.posicionCajones); setPosicionConos(map.posicionConos); setElementosMapa(map.elementosMapa);
     setReferenciaCardinal(map.referenciaCardinal ?? { visible: true, x: 900, y: 62, tamano: 34, rotacion: 0 });
     setStockPlaya(prev => mergeMapItems(prev, map.acopios, { toneladas: 0, m3Estimados: 0, paladas: 0 }).map(a => historialReportes.some(r => r.sincronizacion === 'pendiente') ? a : withInventory(a, inventarioPlanoRef.current?.stock.acopios, map.parametros.densidadTierra)));
-    setStockSilos(prev => mergeMapItems(prev, map.conos, { toneladas: 0, paladasOperativas: 0, humedadNivel: 1 }).map(a => historialReportes.some(r => r.sincronizacion === 'pendiente') ? a : withInventory(a, inventarioPlanoRef.current?.stock.conos, map.parametros.densidadTierra)));
+    setStockSilos(prev => consolidarConos(mergeMapItems(prev, map.conos, { toneladas: 0, paladasOperativas: 0, humedadNivel: 1 }).map(a => historialReportes.some(r => r.sincronizacion === 'pendiente') ? a : withInventory(a, inventarioPlanoRef.current?.stock.conos, map.parametros.densidadTierra))));
     setReservasPlano(map.reservas);
     setDensidadTierra(map.parametros.densidadTierra); setEscalaCalidad(map.parametros.escalaCalidad);
     setCaracteristicasTierra(map.parametros.caracteristicasTierra);
@@ -3182,22 +3192,29 @@ const App = () => {
     const consumo = redondear(cierres.reduce((n, r) => n + numero(r.consumoProduccionTon), 0));
     const max = Math.max(1, ...cierres.map(r => numero(r.totalToneladasIngresadas)));
     const muestras = resumenHistorico.filas ?? [];
-    const promedio = indice => redondear(muestras.reduce((s, fila) => s + numeroHistorico(fila[indice]), 0) / Math.max(1, muestras.filter(fila => numeroHistorico(fila[indice]) > 0).length));
-    const toneladasSiloHistoricas = muestras.reduce((s, fila) => s + numeroHistorico(fila[11]), 0);
-    const produccionMolienda = promedio(5);
-    const produccionSilo = promedio(7);
-    const balanzaProduccion = promedio(13);
+    const fechaHistorica = fila => {
+      const texto = String(fila[0] ?? '').trim();
+      const directo = /^\d{4}-\d{2}-\d{2}/.exec(texto)?.[0];
+      if (directo) return directo;
+      const fecha = new Date(texto);
+      return Number.isNaN(fecha.getTime()) ? '' : fecha.toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' });
+    };
+    const hoy = fechaLocal(), mesActual = hoy.slice(0, 7), anioActual = hoy.slice(0, 4);
+    const totalHistorico = (filas, indice) => redondear(filas.reduce((s, fila) => s + numeroHistorico(fila[indice]), 0));
+    const periodos = [
+      { nombre: 'Hoy', filas: muestras.filter(f => fechaHistorica(f) === hoy) },
+      { nombre: 'Este mes', filas: muestras.filter(f => fechaHistorica(f).slice(0, 7) === mesActual) },
+      { nombre: 'Este año', filas: muestras.filter(f => fechaHistorica(f).slice(0, 4) === anioActual) }
+    ].map(periodo => ({ ...periodo, molidas: totalHistorico(periodo.filas, 11), consumidas: totalHistorico(periodo.filas, 13) }));
+    const toneladasSiloHistoricas = totalHistorico(muestras, 11);
+    const produccionMolienda = totalHistorico(muestras, 5);
+    const produccionSilo = totalHistorico(muestras, 7);
+    const balanzaProduccion = totalHistorico(muestras, 13);
     const porTurno = ['T1', 'T2', 'T3'].map(turno => {
       const filas = muestras.filter(f => String(f[1]).toUpperCase().includes(turno));
       return { turno, toneladas: redondear(filas.reduce((s, f) => s + numeroHistorico(f[11]), 0)), registros: filas.length };
     });
     const maxTurno = Math.max(1, ...porTurno.map(x => x.toneladas));
-    const responsables = Object.values(muestras.reduce((acc, fila) => {
-      const nombre = String(fila[2] || 'Sin supervisor').trim();
-      if (!acc[nombre]) acc[nombre] = { nombre, registros: 0, toneladas: 0 };
-      acc[nombre].registros += 1; acc[nombre].toneladas += numeroHistorico(fila[11]);
-      return acc;
-    }, {})).sort((a, b) => b.toneladas - a.toneladas || b.registros - a.registros).slice(0, 5);
     const cobertura = muestras.length ? `${fechaCorta(muestras[muestras.length - 1]?.[0])} a ${fechaCorta(muestras[0]?.[0])}` : 'sin lectura histórica';
     return <main className={`min-h-screen ${themeClasses.bg} p-4 md:p-8`}><div className="max-w-6xl mx-auto space-y-6">
       <header className="mes-page-header"><div><p className="mes-overline">CONTROL DE GESTIÓN / DECISIONES OPERATIVAS</p><h2>Indicadores y tendencias</h2><p>Separa el stock actual, los cierres auditados y el histórico productivo para no mezclar saldos con estimaciones.</p></div><div className="flex gap-2"><button onClick={() => setCurrentView('historico')} className="mes-secondary-button">Ver registros</button><button onClick={() => setCurrentView('dashboard')} className="mes-primary-button">Volver al panel</button></div></header>
@@ -3208,16 +3225,16 @@ const App = () => {
       <section className="grid grid-cols-1 xl:grid-cols-3 gap-5">
         <article className={`${themeClasses.card} border rounded-2xl p-5 xl:col-span-2`}><div className="flex justify-between gap-3 flex-wrap"><div><p className="mes-section-kicker">HISTÓRICO PRODUCTIVO</p><h3 className="text-xl font-black">Últimas lecturas disponibles</h3><p className="text-sm text-slate-400">Cobertura: {cobertura} · {muestras.length} registros.</p></div><span className="mes-data-source">{resumenHistorico.error ? 'Sin actualización' : 'CSV / planilla validada'}</span></div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-5">{[
-            ['Producción molienda', produccionMolienda, 't/reg.', 'campo productivo'], ['Producción silo', produccionSilo, 't/reg.', 'campo productivo'], ['Balanza producción', balanzaProduccion, 't/reg.', 'campo de balanza']
+            ['Producción molienda', produccionMolienda, 't', 'acumulado de muestra'], ['Producción silo', produccionSilo, 't', 'acumulado de muestra'], ['Balanza producción', balanzaProduccion, 't', 'tierra consumida']
           ].map(([nombre, valor, unidad, nota]) => <div key={nombre} className="mes-metric-chip"><span>{nombre}</span><strong>{valor || '—'} <small>{valor ? unidad : ''}</small></strong><em>{nota}</em></div>)}</div>
           <div className="mt-5 rounded-xl border border-slate-700/70 p-4"><div className="flex justify-between gap-3"><strong>Toneladas molidas a silo</strong><strong className="text-cyan-300">{redondear(toneladasSiloHistoricas).toLocaleString('es-AR')} t</strong></div><p className="mt-1 text-xs text-slate-400">Acumulado de los registros cargados en la muestra histórica. No representa stock actual de silo.</p></div>
         </article>
-        <article className={`${themeClasses.card} border rounded-2xl p-5`}><p className="mes-section-kicker">DISTRIBUCIÓN</p><h3 className="text-xl font-black">Carga a silo por turno</h3><div className="mt-5 space-y-4">{porTurno.map(x => <div key={x.turno}><div className="flex justify-between text-sm"><strong>{x.turno}</strong><span>{x.toneladas.toLocaleString('es-AR')} t · {x.registros} reg.</span></div><div className="mes-progress"><i style={{ width: `${Math.max(0, x.toneladas / maxTurno * 100)}%` }} /></div></div>)}</div><p className="mt-5 text-xs text-slate-400">Basado en «Toneladas molidas a silo» del histórico.</p></article>
+        <article className={`${themeClasses.card} border rounded-2xl p-5`}><p className="mes-section-kicker">DISTRIBUCIÓN</p><h3 className="text-xl font-black">Carga a silo por turno</h3><div className="mt-5 space-y-4">{porTurno.map(x => <div key={x.turno}><div className="flex justify-between text-sm"><strong>{x.turno}</strong><span>{x.toneladas.toLocaleString('es-AR')} t</span></div><div className="mes-progress"><i style={{ width: `${Math.max(0, x.toneladas / maxTurno * 100)}%` }} /></div></div>)}</div><p className="mt-5 text-xs text-slate-400">Basado en «Toneladas molidas a silo» del histórico.</p></article>
       </section>
       <section className="grid grid-cols-1 lg:grid-cols-5 gap-5">
         <article className={`${themeClasses.card} border rounded-2xl p-5 lg:col-span-3`}><div className="flex justify-between gap-3 flex-wrap"><div><p className="mes-section-kicker">AUDITORÍAS DEL SISTEMA</p><h3 className="text-xl font-black">Recepción por jornada</h3></div><span className="text-sm text-slate-400">Últimos {cierres.length} cierres</span></div>
           {cierres.length ? <div className="mt-5 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">{cierres.map(r => <div key={r.id} className="mes-bar-card"><div className="h-24 flex items-end"><i style={{height:`${Math.max(4,numero(r.totalToneladasIngresadas)/max*100)}%`}} /></div><strong>{redondear(r.totalToneladasIngresadas)} t</strong><span>{fechaCorta(r.fecha)}</span></div>)}</div> : <p className="mt-5 text-sm text-slate-400">Aparecerán datos al cerrar auditorías.</p>}</article>
-        <article className={`${themeClasses.card} border rounded-2xl p-5 lg:col-span-2`}><p className="mes-section-kicker">TRAZABILIDAD</p><h3 className="text-xl font-black">Registros por supervisor</h3><div className="mt-4 space-y-3">{responsables.length ? responsables.map(x => <div key={x.nombre} className="flex justify-between gap-2 border-b border-slate-700/60 pb-2 text-sm"><span>{x.nombre}</span><strong>{redondear(x.toneladas)} t <small className="text-slate-400 font-normal">· {x.registros}</small></strong></div>) : <p className="text-sm text-slate-400">Sin filas históricas todavía.</p>}</div></article>
+        <article className={`${themeClasses.card} border rounded-2xl p-5 lg:col-span-2`}><p className="mes-section-kicker">FLUJO DE MATERIA PRIMA</p><h3 className="text-xl font-black">Molido y consumido</h3><div className="mt-4 space-y-3">{periodos.map(periodo => <div key={periodo.nombre} className="border-b border-slate-700/60 pb-3"><div className="flex justify-between gap-2 text-sm"><strong>{periodo.nombre}</strong><span className="text-cyan-300">{periodo.molidas.toLocaleString('es-AR')} t molidas</span></div><div className="mt-1 flex justify-between gap-2 text-sm text-slate-400"><span>Salida por balanza / cajón silo</span><strong>{periodo.consumidas.toLocaleString('es-AR')} t</strong></div></div>)}</div><p className="mt-3 text-xs text-slate-400">La conversión a m³ se consulta con la densidad y humedad registrada en cada movimiento.</p></article>
       </section>
       {resumenHistorico.error && <p role="status" className="mes-inline-status">No se pudo renovar el histórico: {resumenHistorico.error}</p>}
     </div></main>;
@@ -3327,6 +3344,18 @@ const App = () => {
       if (rec.sincronizado) try { await consultarAppsScript('completeReminder', { payload: { action: 'completeReminder', id: rec.id, completado } }); }
       catch (error) { showToast('Cambio local sin sincronizar: ' + error.message, 'error'); }
     };
+    const reprogramar = async () => {
+      const datos = reprogramandoRecordatorio;
+      if (!datos?.fechaAviso) return showToast('Elegí la nueva fecha del aviso.', 'error');
+      try {
+        const respuesta = await consultarAppsScript('rescheduleReminder', { payload: {
+          action: 'rescheduleReminder', id: datos.id, fechaAviso: datos.fechaAviso, horaAviso: datos.horaAviso || ''
+        } });
+        if (Array.isArray(respuesta.recordatorios)) setRecordatorios(respuesta.recordatorios.map(r => ({ ...r, sincronizado: true })));
+        setFechaPizarron(datos.fechaAviso); setReprogramandoRecordatorio(null);
+        showToast('Tarea reprogramada para ' + fechaCorta(datos.fechaAviso) + '.');
+      } catch (error) { showToast('No se pudo reprogramar: ' + error.message, 'error'); }
+    };
     return <div className={`min-h-screen ${themeClasses.bg} p-4 lg:p-10`}><div className="max-w-5xl mx-auto space-y-6">
       <header className="flex flex-wrap justify-between items-center gap-3"><div>
         <h2 className="text-2xl md:text-3xl font-black">Pizarrón de recordatorios y tareas</h2>
@@ -3352,6 +3381,7 @@ const App = () => {
           <p className="text-xs text-slate-400">{rec.fechaAviso ? `Programado: ${fechaCorta(rec.fechaAviso)}${horaCorta(rec.horaAviso) ? ` · ${horaCorta(rec.horaAviso)}` : ''}` : `Creado: ${fechaCorta(rec.fecha)}`} · {rec.sincronizado ? `Sheets / Telegram: ${rec.estadoTelegram || 'sin programación'}` : 'Solo en este navegador'}</p>
           {rec.realizadoEn && <p className="text-xs text-emerald-400">Realizado: {new Date(rec.realizadoEn).toLocaleString('es-AR')}</p>}
           <div className="flex justify-between gap-3 border-t border-slate-700 pt-2"><button className="text-xs font-bold text-cyan-400" onClick={() => marcar(rec)}>{rec.completado ? 'Reabrir tarea' : 'Marcar como realizada'}</button>
+            {!rec.completado && <button className="text-xs font-bold text-amber-400" onClick={() => setReprogramandoRecordatorio({ id: rec.id, fechaAviso: rec.fechaAviso || fechaLocal(), horaAviso: rec.horaAviso || '' })}>Posponer</button>}
             <button aria-label="Eliminar aviso" className="text-xs text-red-400" onClick={() => setRecordatorios(prev => prev.filter(r => r.id !== rec.id))}><Icons.Trash /></button></div>
         </article>)}</div>}
       <section className={`${themeClasses.card} p-4 rounded-2xl border text-sm space-y-2`}><h3 className="font-bold">Avisos en este dispositivo</h3>
@@ -3360,6 +3390,12 @@ const App = () => {
           if (typeof Notification === 'undefined') return showToast('Este navegador no admite notificaciones.', 'error');
           const permiso = await Notification.requestPermission(); setPermisoAvisos(permiso);
         }}>Permitir notificaciones ({permisoAvisos})</button></section>
+      {reprogramandoRecordatorio && <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4"><section className={`${themeClasses.card} w-full max-w-sm rounded-2xl border p-5 space-y-4`}>
+        <div><p className="mes-section-kicker">PIZARRÓN</p><h3 className="text-lg font-black">Posponer tarea</h3><p className="text-sm text-slate-400">La tarea pendiente cambia su fecha compartida y vuelve a programarse para Telegram si tiene horario.</p></div>
+        <label className="block text-sm">Nueva fecha<input type="date" value={reprogramandoRecordatorio.fechaAviso} onChange={e => setReprogramandoRecordatorio(v => ({ ...v, fechaAviso: e.target.value }))} className={`mt-1 w-full p-2 rounded-lg ${themeClasses.input}`} /></label>
+        <label className="block text-sm">Hora (opcional)<input type="time" value={reprogramandoRecordatorio.horaAviso} onChange={e => setReprogramandoRecordatorio(v => ({ ...v, horaAviso: e.target.value }))} className={`mt-1 w-full p-2 rounded-lg ${themeClasses.input}`} /></label>
+        <div className="flex justify-end gap-2"><button onClick={() => setReprogramandoRecordatorio(null)} className="mes-secondary-button">Cancelar</button><button onClick={reprogramar} className="mes-primary-button">Reprogramar</button></div>
+      </section></div>}
     </div></div>;
   };
 
@@ -5464,6 +5500,10 @@ const App = () => {
             <button key={vista} type="button" aria-current={currentView === vista ? 'page' : undefined}
               onClick={() => { setCurrentView(vista); if (vista === 'planning') setCurrentStep(1); }}>{nombre}</button>)}
         </div>
+        <button type="button" className="mes-topbar-config" onClick={() => setDarkMode(valor => !valor)}
+          aria-label={darkMode ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'} title={darkMode ? 'Modo claro' : 'Modo oscuro'}>
+          {darkMode ? <Icons.Sun /> : <Icons.Moon />}
+        </button>
         <button type="button" className="mes-topbar-config" onClick={() => { setPinDestino('catalogos'); setModalPinAbierto(true); }} aria-label="Configuración"><Icons.Settings /></button>
       </nav>}
       {hydrated && <SharedMapPanel draft={crearPlanoActual()}

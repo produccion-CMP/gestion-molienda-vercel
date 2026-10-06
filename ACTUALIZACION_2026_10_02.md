@@ -2,7 +2,7 @@
 
 ## Interfaz e histórico productivo
 
-- El panel de **Indicadores** diferencia inventario actual, cierres auditados e histórico productivo. Incluye producción promedio de molienda y silo, toneladas molidas a silo, distribución por turno y trazabilidad por supervisor.
+- El panel de **Indicadores** diferencia inventario actual, cierres auditados e histórico productivo. Muestra toneladas molidas y consumidas hoy, en el mes y en el año, además de la carga a silo por turno.
 - El histórico usa el CSV publicado como respaldo de lectura si Apps Script no responde. Solo permite consulta; no altera registros productivos.
 - Se muestran los campos operativos relevantes: fecha, turno, supervisor, novedades de molienda/silo, equipo, producción, tiempo de silo, toneladas a silo, cono cargado y balanza de producción.
 - Se reforzaron contrastes claro/oscuro, jerarquía visual, tarjetas, barras y acciones principales con una paleta sobria de tierra, acero y verde operacional.
@@ -15,6 +15,8 @@
 - La planificación se actualiza por número de revisión. Una versión guardada por otro dispositivo reemplaza la copia local cuando es más nueva; un borrador sin publicar del usuario actual no se sobrescribe silenciosamente.
 - Los recordatorios se cargan de forma autoritativa desde la planilla para que altas, cambios de estado y finalizaciones sean iguales en todos los equipos.
 - Los últimos cierres confirmados devuelven sus datos operativos, balance de conos e inventario posterior. Así cualquier usuario puede abrir indicadores, balances e informes de cierres realizados por otra persona.
+- El plano y el inventario consolidan conos por ID y nombre. Si quedó una duplicación de una configuración vieja, se conserva la definición más reciente publicada y los duplicados dejan de mostrarse.
+- En el Pizarrón una tarea pendiente se puede posponer con nueva fecha y hora; el cambio se comparte con todos y se vuelve a programar para Telegram cuando tiene horario.
 
 Después de publicar esta versión es obligatorio reemplazar `integrations/Code.gs`, crear una nueva implementación de Apps Script y reemplazar `App.jsx` en GitHub. Si no se actualiza Apps Script, la aplicación anterior seguirá devolviendo solo resúmenes y no podrá compartir los cierres completos.
 
@@ -38,7 +40,7 @@ Después de publicar esta versión es obligatorio reemplazar `integrations/Code.
 
 ## Conos duplicados existentes
 
-La planilla actual contiene cuatro IDs antiguos (`cono-1`, `cono-2`, `cono-3`, `cono-intermedio`) y cuatro IDs del plano vigente. La nueva lógica ignora los antiguos y, al siguiente guardado válido del plano o cierre de auditoría, reescribe `MES_Inventario` con los conos publicados.
+La planilla actual contiene cuatro IDs antiguos (`cono-1`, `cono-2`, `cono-3`, `cono-intermedio`) y cuatro IDs del plano vigente. La nueva lógica ignora los antiguos; también descarta nombres de cono repetidos y, al siguiente guardado válido del plano o cierre de auditoría, reescribe `MES_Inventario` con los conos publicados.
 
 No borres filas manualmente antes de publicar esta actualización. Si necesitás conservar una foto del estado actual, descargá primero la hoja `MES_Inventario` como Excel.
 
