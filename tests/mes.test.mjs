@@ -9,7 +9,7 @@ import { nearestWeatherLocation } from '../lib/weather-locations.js';
 import { POST as postSheets } from '../app/api/sheets/route.js';
 const scriptUrl = 'https://script.google.com/macros/s/AKfycbx0KsVei3Nz-z9qpEu-Pot10qEKTQKJqOl93wsTXdOWHaCM80jnw-wqrTRPrS8zue36/exec';
 
-const source = readFileSync(new URL('../App.jsx', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../app/App.jsx', import.meta.url), 'utf8');
 const domain = source.slice(source.indexOf('const APPS_SCRIPT_URL'), source.indexOf('const Icons'));
 const { calcularBalanceJornada, normalizarTextura, densidadPorHumedad, errorAsistencia } = runInNewContext(
   `${domain}\n({ calcularBalanceJornada, normalizarTextura, densidadPorHumedad, errorAsistencia })`,
