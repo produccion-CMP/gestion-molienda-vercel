@@ -144,7 +144,13 @@ function mesStock(book) {
     // El plano vigente define qué conos existen. Los renglones sin ese ID son
     // residuos de configuraciones anteriores y no deben volver a la aplicación.
     const byId = new Map(conos.map(x => [String(x.id), x]));
-    const conosVigentes = (shared.conos || []).map(def => {
+    const vistos = new Set();
+    const conosVigentes = (shared.conos || []).slice().reverse().filter(def => {
+      const clave = mesMapKey(def.nombre);
+      if (!clave || vistos.has(String(def.id)) || vistos.has(`nombre:${clave}`)) return false;
+      vistos.add(String(def.id)); vistos.add(`nombre:${clave}`);
+      return true;
+    }).reverse().map(def => {
       const item = { ...(byId.get(String(def.id)) || { id: String(def.id), toneladas: 0, paladasOperativas: 0, humedadNivel: 1 }) };
       item.nombre = def.nombre; item.activo = def.activo !== false;
       return item;
@@ -587,6 +593,20 @@ function doPost(e) {
       if (!completed && current[9] === 'CANCELADO' && current[2] && current[3]) tab.getRange(row, 10).setValue('PENDIENTE');
       return mesJson({ ok: true, recordatorios: mesReminders(book).slice(-200) });
     }
+    if (body.action === 'rescheduleReminder') {
+      if (!lock.tryLock(20000)) throw new Error('Pizarrón ocupado. Reintentá.');
+      const fecha = String(body.fechaAviso || ''), hora = String(body.horaAviso || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || (hora && !/^([01]\d|2[0-3]):[0-5]\d$/.test(hora)))
+        throw new Error('Indicá una fecha válida y, si corresponde, una hora válida.');
+      const book = SpreadsheetApp.openById(MES_PRIMARY_ID), tab = mesTab(book, 'MES_Recordatorios', MES_REMINDER_HEADER, true);
+      const found = tab.getLastRow() > 1 ? tab.getRange(2, 1, tab.getLastRow() - 1, 1)
+        .createTextFinder(String(body.id || '')).matchEntireCell(true).findNext() : null;
+      if (!found) throw new Error('Recordatorio no encontrado en la planilla.');
+      const row = found.getRow();
+      const actual = tab.getRange(row, 1, 1, 11).getValues()[0];
+      tab.getRange(row, 3, 1, 8).setValues([[fecha, hora, actual[4], actual[5], actual[6], false, '', hora ? 'PENDIENTE' : 'SIN_FECHA', '']]);
+      return mesJson({ ok: true, recordatorios: mesReminders(book).slice(-200) });
+    }
     if (body.action === 'saveRecipient') {
       if (!lock.tryLock(20000)) throw new Error('Configuración ocupada. Reintentá.');
       const email = String(body.email || '').trim().toLowerCase();
@@ -772,6 +792,7 @@ function mesReadMap(book) {
     const row = current.getRange(2, 1, 1, 5).getValues()[0];
     const map = JSON.parse(String(row[3]));
     mesValidateMap(map);
+    mesCanonicalizeMap(book, map);
     const revision = Number(row[0]);
     if (!Number.isInteger(revision) || revision < 1) throw new Error('La revisión actual del plano no es válida.');
     return { ok: true, mapProtocol: 2, revision, updatedAt: row[1] instanceof Date ? row[1].toISOString() : String(row[1]), map };
@@ -782,6 +803,7 @@ function mesReadMap(book) {
   const row = history.getRange(history.getLastRow(), 1, 1, 3).getValues()[0];
   const map = JSON.parse(String(row[2]));
   mesValidateMap(map);
+  mesCanonicalizeMap(book, map);
   const revision = Number(row[0]);
   if (!Number.isInteger(revision) || revision < 1) throw new Error('La revisión del historial del plano no es válida.');
   return { ok: true, mapProtocol: 2, revision, updatedAt: row[1] instanceof Date ? row[1].toISOString() : String(row[1]), map };
@@ -803,6 +825,15 @@ function mesCanonicalizeMap(book, map) {
     if (ids.has(String(a.id))) throw new Error('Dos acopios del plano coinciden con el mismo registro de inventario. Cambiá nombre o ID.');
     ids.add(String(a.id));
   });
+  const vistosConos = new Set();
+  map.conos = map.conos.slice().reverse().filter(c => {
+    const clave = mesMapKey(c.nombre);
+    if (!clave || vistosConos.has(String(c.id)) || vistosConos.has(`nombre:${clave}`)) return false;
+    vistosConos.add(String(c.id)); vistosConos.add(`nombre:${clave}`);
+    return true;
+  }).reverse();
+  const idsConos = new Set(map.conos.map(c => String(c.id)));
+  map.posicionConos = Object.fromEntries(Object.entries(map.posicionConos).filter(([id]) => idsConos.has(String(id))));
   return map;
 }
 
